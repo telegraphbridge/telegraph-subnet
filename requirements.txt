@@ -1,0 +1,8 @@
+bittensor
+web3
+python-dotenv
+numpy
+asyncio
+tensorflow
+joblib
+dotenv
