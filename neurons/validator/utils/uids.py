@@ -24,5 +24,24 @@ def check_uid_availability(
     return True
 
 def get_miner_uids() -> np.ndarray:
-    """Get all miner uids"""
+    """Get all miner uids from the network
     
+    Returns:
+        np.ndarray: Array of miner UIDs that are serving on the network
+    """
+    import bittensor as bt
+    from neurons.validator.config import get_config
+    
+    # Get config for network parameters
+    config = get_config()
+    
+    # Get the metagraph for our subnet
+    metagraph = bt.metagraph(netuid=config.netuid)
+    metagraph.sync(subtensor=bt.subtensor(config=config))
+    
+    # Filter for miners using the check function
+    miner_uids = [uid for uid in range(metagraph.n) 
+                  if check_uid_availability(metagraph, uid, config.neuron.vpermit_tao_limit)]
+    
+    # Return as numpy array
+    return np.array(miner_uids)

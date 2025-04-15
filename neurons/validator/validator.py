@@ -25,12 +25,19 @@ class TelegraphValidator(BaseValidatorNeuron):
         """Main validator loop"""
         try:
             miner_uids = get_miner_uids()
+            
+            # Check if we have miners to query
+            if len(miner_uids) == 0:
+                bt.logging.warning("No miners available to query")
+                return
+                
+            bt.logging.info(f"Querying {len(miner_uids)} miners")
+            
             # Query miners
             responses = await self.dendrite(
                 # Send the query to all miners
-                # TODO: send to all miners
-                axons =[self.metagraph.axons[uid] for uid in miner_uids],
-                synapse=PredictionSynapse(chain_name=PredictionSynapse.chain_name),
+                axons=[self.metagraph.axons[uid] for uid in miner_uids],
+                synapse=PredictionSynapse(chain_name=ChainType.BASE.value),  # Fixed the chain_name
                 deserialize=True,
             )
 
@@ -56,10 +63,35 @@ class TelegraphValidator(BaseValidatorNeuron):
             bt.logging.error(f"Error in validator forward: {e}")
 
 
-    async def _store_predictions(self, responses: Dict[TokenPrediction], miner_uids: List[int]):
-        """Store predictions for each miner"""
-        for uid in miner_uids:
-            await self.prediction_store.store_prediction(uid, responses[uid])
+    async def _store_predictions(self, responses):
+        """Store predictions for each miner
+        
+        Args:
+            responses (Dict[int, any]): Responses from miners, keyed by UID
+        """
+        try:
+            from datetime import datetime
+            for uid, response in responses.items():
+                # Check if response has the required fields
+                if not hasattr(response, 'addresses') or not response.addresses:
+                    bt.logging.warning(f"Invalid response from UID {uid}: missing addresses")
+                    continue
+                    
+                # Convert PredictionSynapse to TokenPrediction
+                prediction = TokenPrediction(
+                    chain=ChainType(response.chain_name),
+                    addresses=response.addresses,
+                    pairAddresses=getattr(response, 'pairAddresses', []),
+                    timestamp=datetime.now(),
+                    confidence_scores={}  # Not available in synapse
+                )
+                
+                # Store valid prediction
+                await self.prediction_store.store_prediction(uid, prediction)
+                bt.logging.debug(f"Stored prediction from UID {uid}")
+                
+        except Exception as e:
+            bt.logging.error(f"Error storing predictions: {e}")
 
 
     async def _calculate_rewards(self, miner_uids: List[int]) -> Dict[int, float]:
