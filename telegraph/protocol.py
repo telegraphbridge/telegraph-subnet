@@ -1,5 +1,5 @@
 import bittensor as bt
-from typing import List, Optional
+from typing import List, Optional, Any, Dict
 from base.types import ChainType, TokenPrediction
 
 class PredictionSynapse(bt.Synapse):
@@ -62,3 +62,22 @@ class TelegraphProtocol:
         if not prediction.pairAddresses or len(prediction.pairAddresses) < 2:
             return False
         return True
+
+
+class InferenceRequestSynapse(bt.Synapse):
+    """
+    Protocol for cross-subnet inference requests as described in Section 3.3
+    of the Telegraph whitepaper.
+    
+    Attributes:
+        inference_code: Code identifying target model/subnet
+        data: Input data for the model
+        response: Output from the target model
+    """
+    # Required request inputs
+    inference_code: str
+    data: Any
+    
+    # Optional response outputs
+    response: Optional[Any] = None
+    error: Optional[str] = None

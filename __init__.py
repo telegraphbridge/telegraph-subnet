@@ -28,3 +28,13 @@ from . import protocol
 from . import base
 from . import validator
 from . import utils
+from .protocol import InferenceRequestSynapse, PredictionSynapse
+from .registry import InferenceRegistry
+from .client import TelegraphClient
+
+__all__ = [
+    'InferenceRequestSynapse',
+    'PredictionSynapse',
+    'InferenceRegistry',
+    'TelegraphClient',
+]

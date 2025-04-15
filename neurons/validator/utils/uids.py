@@ -1,6 +1,6 @@
 import bittensor as bt
 import numpy as np
-from typing import List
+from typing import List, Optional
 
 def check_uid_availability(
     metagraph: "bt.metagraph.Metagraph", uid: int, vpermit_tao_limit: int
@@ -29,15 +29,16 @@ def get_miner_uids() -> np.ndarray:
     Returns:
         np.ndarray: Array of miner UIDs that are serving on the network
     """
-    import bittensor as bt
-    from neurons.validator.config import get_config
+    # Import locally to avoid circular import
+    from ..config import get_config
     
     # Get config for network parameters
     config = get_config()
     
     # Get the metagraph for our subnet
-    metagraph = bt.metagraph(netuid=config.netuid)
-    metagraph.sync(subtensor=bt.subtensor(config=config))
+    subtensor = bt.subtensor(config=config)
+    metagraph = subtensor.metagraph(netuid=config.netuid)
+    metagraph.sync(subtensor=subtensor)
     
     # Filter for miners using the check function
     miner_uids = [uid for uid in range(metagraph.n) 
