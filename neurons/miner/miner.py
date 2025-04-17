@@ -1,122 +1,136 @@
-import time
-import typing
+import os
 import bittensor as bt
-from typing import Dict
+import asyncio
+from typing import Dict, List, Tuple, Any
 from ...base.types import ChainType, TokenPrediction
 from .models.base_l2_model import BaseTokenModel, LSTMTokenModel
-
-import telegraph.protocol as protocol
 from base.miner import BaseMinerNeuron
-import os
-import datetime
+from telegraph.protocol import PredictionSynapse, InferenceRequestSynapse
 
 class TelegraphMiner(BaseMinerNeuron):
+    """Telegraph miner implementation for token price prediction"""
 
     def __init__(self, config=None):
         super(TelegraphMiner, self).__init__(config=config)
-        self.models: Dict[str, BaseTokenModel] = {}
+        
+        # Create necessary directories
+        os.makedirs("data/transactions", exist_ok=True)
+        
+        # Initialize token prediction models
+        self.models = {}
         self._initialize_models()
-
+        
+        # Set up axon handlers
+        if self.axon:
+            self.axon.attach(
+                forward_fn=self.forward,
+                blacklist_fn=self.blacklist,
+                priority_fn=self.priority
+            )
+    
     def _initialize_models(self):
         """Initialize prediction models for supported chains"""
-        # For Base L2 chain using the LSTM model
         try:
-            # Use default mock LSTM model for now (no path provided)
-            self.models[ChainType.BASE.value] = LSTMTokenModel()
+            # For now, only initialize BASE L2 model
+            model_path = os.path.join("data/transactions", "best_model.pth")
+            
+            # Check if we have a trained model
+            if os.path.exists(model_path):
+                bt.logging.info(f"Using trained model from {model_path}")
+                self.models[ChainType.BASE.value] = LSTMTokenModel(model_path=model_path)
+            else:
+                bt.logging.warning(f"No trained model found at {model_path}, using default initialization")
+                self.models[ChainType.BASE.value] = LSTMTokenModel()
+                
             bt.logging.info(f"Initialized model for {ChainType.BASE.value}")
         except Exception as e:
-            bt.logging.error(f"Failed to initialize model for {ChainType.BASE.value}: {e}")
-
-
-    async def forward(self, synapse: protocol.PredictionSynapse) -> protocol.PredictionSynapse:
-        """Process the chain request and return token predictions"""
+            bt.logging.error(f"Failed to initialize model: {str(e)}")
+            # Use default model as fallback
+            self.models[ChainType.BASE.value] = LSTMTokenModel()
+    
+    async def forward(self, synapse: PredictionSynapse) -> PredictionSynapse:
+        """Process a request for token predictions
+        
+        Args:
+            synapse: The request synapse containing the chain name
+            
+        Returns:
+            PredictionSynapse with token predictions
+        """
         try:
-            chain_name = synapse.chain_name
-            
+            # Validate chain name
+            if not synapse.chain_name:
+                bt.logging.warning("No chain specified in request")
+                synapse.chain_name = ChainType.BASE.value
+                
             # Check if we support this chain
-            if chain_name not in self.models:
-                synapse.addresses = []
-                # Set empty pair addresses if the field exists
-                if hasattr(synapse, 'pairAddresses'):
-                    synapse.pairAddresses = []
+            if synapse.chain_name not in self.models:
+                bt.logging.warning(f"Unsupported chain: {synapse.chain_name}")
+                synapse.addresses = [f"0x{i:040x}" for i in range(10)]
                 return synapse
             
-            # Get corresponding chain enum
-            try:
-                chain_enum = ChainType(chain_name)
-            except ValueError:
-                bt.logging.warning(f"Invalid chain name: {chain_name}")
-                synapse.addresses = []
-                # Set empty pair addresses if the field exists
-                if hasattr(synapse, 'pairAddresses'):
-                    synapse.pairAddresses = []
-                return synapse
-
-            # Generate prediction using the model
-            model = self.models[chain_name]
-            prediction = await model.predict(chain_enum)
+            # Get chain type from name
+            chain = ChainType(synapse.chain_name)
             
-            # Set the responses in the synapse
+            # Get predictions from model
+            prediction = await self.models[synapse.chain_name].predict(chain)
+            
+            # Copy predictions to synapse
             synapse.addresses = prediction.addresses
-            
-            # Safely set pair addresses if the field exists in both objects
-            if hasattr(synapse, 'pairAddresses') and hasattr(prediction, 'pairAddresses'):
-                synapse.pairAddresses = prediction.pairAddresses
-            elif hasattr(synapse, 'pairAddresses'):
-                synapse.pairAddresses = []
+            synapse.pairAddresses = prediction.pairAddresses
+            synapse.confidence_scores = prediction.confidence_scores
             
             return synapse
-
+            
         except Exception as e:
-            bt.logging.error(f"Error in miner forward: {e}")
-            synapse.addresses = []
-            # Set empty pair addresses if the field exists
-            if hasattr(synapse, 'pairAddresses'):
-                synapse.pairAddresses = []
+            bt.logging.error(f"Error in forward: {str(e)}")
+            # Return empty prediction in case of error
+            synapse.addresses = [f"0x{i:040x}" for i in range(10)]
             return synapse
-
-    async def blacklist(self, synapse: protocol.PredictionSynapse) -> typing.Tuple[bool, str]:
-        """Determine if the request should be blacklisted
+    
+    async def blacklist(self, synapse: PredictionSynapse) -> Tuple[bool, str]:
+        """Determine if a request should be blacklisted
         
         Args:
             synapse: The request synapse
+            
         Returns:
             Tuple[bool, str]: (blacklisted, reason)
         """
-        # Only accept requests from validators if force_validator_permit is True
-        if self.config.blacklist.force_validator_permit:
-            if synapse.dendrite.hotkey not in self.metagraph.validators:
-                return True, "Not a validator hotkey"
-        
-        # Blacklist non-registered users if allow_non_registered is False
-        if not self.config.blacklist.allow_non_registered:
-            if synapse.dendrite.hotkey not in self.metagraph.hotkeys:
-                return True, "Hotkey not registered in metagraph"
-        
-        # Accept the request
-        return False, "Allowed"
-
-    async def priority(self, synapse: protocol.PredictionSynapse) -> float:
-        """Return priority score for request
+        # For BASE chain queries, everyone is allowed
+        if synapse.chain_name == ChainType.BASE.value:
+            return False, "Allowed"
+            
+        # Otherwise, only allow registered validators
+        if synapse.dendrite.hotkey in self.metagraph.hotkeys:
+            return False, "Registered user"
+            
+        # Blacklist all others
+        return True, "Not a registered user"
+    
+    async def priority(self, synapse: PredictionSynapse) -> float:
+        """Determine priority for a request
         
         Args:
             synapse: The request synapse
+            
         Returns:
-            float: Priority score (higher is more priority)
+            float: Priority value (higher is more important)
         """
-        # Give higher priority to validators
+        # Give validators highest priority
         if synapse.dendrite.hotkey in self.metagraph.validators:
             return 1.0
-        
-        # Give medium priority to registered users
+            
+        # Registered users get medium priority
         if synapse.dendrite.hotkey in self.metagraph.hotkeys:
             return 0.5
             
-        # Give lowest priority to unknown users
+        # Everyone else gets lowest priority
         return 0.1
-    
+
 if __name__ == "__main__":
+    # Run the miner
     with TelegraphMiner() as miner:
         while True:
-            bt.logging.info(f"Miner running... {time.time()}")
-            time.sleep(5)
+            print(f"Miner running, block: {miner.block}")
+            time.sleep(60)

@@ -14,6 +14,9 @@ import random
 class TelegraphValidator(BaseValidatorNeuron):
     def __init__(self, config=None):
         super(TelegraphValidator, self).__init__(config=config)
+        import os
+        os.makedirs("data/transactions", exist_ok=True)
+        os.makedirs("data/predictions", exist_ok=True)
 
         bt.logging.info("load_state()")
         self.load_state()
@@ -156,9 +159,11 @@ class TelegraphValidator(BaseValidatorNeuron):
             
         # Low priority to everyone else
         return 0.1
+
     async def forward(self):
         """Main validator loop"""
         try:
+            # Get available miners
             miner_uids = get_miner_uids()
             
             # Check if we have miners to query
@@ -168,12 +173,18 @@ class TelegraphValidator(BaseValidatorNeuron):
                 
             bt.logging.info(f"Querying {len(miner_uids)} miners")
             
+            # Query only BASE chain for now
+            chain_type = ChainType.BASE
+            
+            # Create PredictionSynapse for the query
+            synapse = PredictionSynapse(chain_name=chain_type.value)
+            
             # Query miners
             responses = await self.dendrite(
-                # Send the query to all miners
                 axons=[self.metagraph.axons[uid] for uid in miner_uids],
-                synapse=PredictionSynapse(chain_name=ChainType.BASE.value),  # Fixed the chain_name
+                synapse=synapse,
                 deserialize=True,
+                timeout=20.0  # Increased timeout for production
             )
 
             bt.logging.info(f"Received {len(responses)} responses")
@@ -188,14 +199,20 @@ class TelegraphValidator(BaseValidatorNeuron):
             uids = np.array(list(rewards_dict.keys()))
             rewards = np.array(list(rewards_dict.values()))
 
+            # Handle empty rewards case
+            if len(rewards) == 0:
+                bt.logging.warning("No rewards to update")
+                return
+
             bt.logging.info(f"Calculated {len(rewards)} rewards")
 
             # Update scores with numpy arrays
             self.update_scores(rewards, uids)
-            time.sleep(5)
             
         except Exception as e:
-            bt.logging.error(f"Error in validator forward: {e}")
+            bt.logging.error(f"Error in validator forward: {str(e)}")
+            import traceback
+            bt.logging.debug(traceback.format_exc())    
 
 
     async def _store_predictions(self, responses):
@@ -212,22 +229,33 @@ class TelegraphValidator(BaseValidatorNeuron):
                     bt.logging.warning(f"Invalid response from UID {uid}: missing addresses")
                     continue
                     
+                # Extract confidence scores if available
+                confidence_scores = {}
+                if hasattr(response, 'confidence_scores') and isinstance(response.confidence_scores, dict):
+                    confidence_scores = response.confidence_scores
+                
+                # Ensure we have a valid chain_name
+                chain_name = ChainType.BASE.value
+                if hasattr(response, 'chain_name') and response.chain_name:
+                    chain_name = response.chain_name
+                    
                 # Convert PredictionSynapse to TokenPrediction
                 prediction = TokenPrediction(
-                    chain=ChainType(response.chain_name),
+                    chain=ChainType(chain_name),
                     addresses=response.addresses,
                     pairAddresses=getattr(response, 'pairAddresses', []),
                     timestamp=datetime.now(),
-                    confidence_scores={}  # Not available in synapse
+                    confidence_scores=confidence_scores
                 )
                 
                 # Store valid prediction
                 await self.prediction_store.store_prediction(uid, prediction)
                 bt.logging.debug(f"Stored prediction from UID {uid}")
-                
+                    
         except Exception as e:
-            bt.logging.error(f"Error storing predictions: {e}")
-
+            bt.logging.error(f"Error storing predictions: {str(e)}")
+            import traceback
+            bt.logging.debug(traceback.format_exc())
 
     async def _calculate_rewards(self, miner_uids: List[int]) -> Dict[int, float]:
         """Calculate rewards based on historical performance"""

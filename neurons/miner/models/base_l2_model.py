@@ -23,7 +23,8 @@ class BaseTokenModel(ABC):
 class NetherilLSTM(nn.Module):
     """LSTM network for token prediction based on Netheril whitepaper approach"""
     
-    def __init__(self, input_size: int, hidden_size: int, num_layers: int, dropout: float = 0.2):
+    def __init__(self, input_size: int, hidden_size: int = 128, num_layers: int = 2, dropout: float = 0.2):
+
         """Initialize LSTM network for token prediction
         
         Args:
@@ -33,7 +34,7 @@ class NetherilLSTM(nn.Module):
             dropout: Dropout rate for regularization
         """
         super(NetherilLSTM, self).__init__()
-        
+    
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         
@@ -144,6 +145,18 @@ class LSTMTokenModel(BaseTokenModel):
             hidden_size=hidden_size,
             num_layers=num_layers
         ).to(self.device)
+        
+        self.scaler = None
+        scaler_path = os.path.join(data_dir, "feature_scaler.pkl")
+        if os.path.exists(scaler_path):
+            try:
+                with open(scaler_path, 'rb') as f:
+                    self.scaler = pickle.load(f)
+                bt.logging.info(f"Loaded feature scaler from {scaler_path}")
+            except Exception as e:
+                bt.logging.error(f"Error loading feature scaler: {str(e)}")
+        else:
+            bt.logging.warning("No feature scaler found. Predictions may be less accurate.")
         
         # Load pre-trained model if provided
         if model_path and os.path.exists(model_path):
@@ -380,10 +393,12 @@ class LSTMTokenModel(BaseTokenModel):
             else:
                 volume_seq = [0.0] * self.seq_length
                 
-            # Combine all features
             all_features = features + liquidity_seq + volume_seq
             
-            # Create tensor (batch_size=1, seq_len=1, features=input_size)
+            # Apply scaling if scaler is available
+            if self.scaler is not None:
+                all_features = self.scaler.transform([all_features])[0]
+            # Create tensor
             return torch.tensor([all_features], dtype=torch.float32).to(self.device)
             
         except Exception as e:
