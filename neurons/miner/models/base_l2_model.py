@@ -124,7 +124,7 @@ class LSTMTokenModel(BaseTokenModel):
             'marketCapUsd',
             'buyAmount',
             'buyValueEth',
-            'priceInEth',
+            'price',
             'priceInUsd',
             'walletEthBalance',
             # Wallet stats (calculated during preprocessing)
@@ -266,12 +266,12 @@ class LSTMTokenModel(BaseTokenModel):
         
         # Process transactions to gather wallet stats
         for tx in transactions:
-            wallet = tx.get('walletAddress')
+            wallet = tx.get('walletID')
             if not wallet:
                 continue
                 
             # Track tokens traded by each wallet
-            token = tx.get('tokenAddress')
+            token = tx.get('tokenID')
             if token:
                 wallet_tokens[wallet].add(token)
                 
@@ -282,7 +282,7 @@ class LSTMTokenModel(BaseTokenModel):
             if token and token not in self.token_cache:
                 self.token_cache[token] = {
                     'symbol': tx.get('tokenSymbol', ''),
-                    'price': tx.get('priceInEth', 0),
+                    'price': tx.get('price', 0),
                     'liquidity': tx.get('liquidityPoolSize', 0),
                     'volume': tx.get('volume24hUsd', 0),
                     'marketCap': tx.get('marketCapUsd', 0)
@@ -341,7 +341,7 @@ class LSTMTokenModel(BaseTokenModel):
             Tensor representation of the transaction features
         """
         try:
-            wallet = tx.get('walletAddress', '')
+            wallet = tx.get('walletID', '')
             
             # Get wallet stats
             wallet_roi = wallet_stats.get(wallet, {}).get('historical_roi', 0.0)
@@ -355,7 +355,7 @@ class LSTMTokenModel(BaseTokenModel):
                 float(tx.get('marketCapUsd', 0)),
                 float(tx.get('buyAmount', 0)),
                 float(tx.get('buyValueEth', 0)),
-                float(tx.get('priceInEth', 0)),
+                float(tx.get('price', 0)),
                 float(tx.get('priceInUsd', 0)),
                 float(tx.get('walletEthBalance', 0)),
                 float(wallet_roi),
@@ -365,8 +365,8 @@ class LSTMTokenModel(BaseTokenModel):
             
             # Extract historical liquidity sequence
             liquidity_seq = []
-            if 'historicalLiquiditySequence' in tx:
-                for item in tx['historicalLiquiditySequence']:
+            if 'historicalLiquidity' in tx:
+                for item in tx['historicalLiquidity']:
                     liquidity_seq.append(float(item.get('value', 0)))
                     
                 # Pad if needed
@@ -380,8 +380,8 @@ class LSTMTokenModel(BaseTokenModel):
                 
             # Extract historical volume sequence
             volume_seq = []
-            if 'historicalVolumeSequence' in tx:
-                for item in tx['historicalVolumeSequence']:
+            if 'historicalVolume' in tx:
+                for item in tx['historicalVolume']:
                     volume_seq.append(float(item.get('value', 0)))
                     
                 # Pad if needed
@@ -460,7 +460,7 @@ class LSTMTokenModel(BaseTokenModel):
                 if i >= len(scores):
                     break
                     
-                token = tx.get('tokenAddress')
+                token = tx.get('tokenID')
                 if not token:
                     continue
                     
