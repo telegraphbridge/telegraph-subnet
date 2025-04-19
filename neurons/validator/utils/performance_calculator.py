@@ -1,71 +1,150 @@
-from typing import List, Dict
+import os
+import json
+import time
+import bittensor as bt
 import numpy as np
+from typing import List, Dict, Any
+from datetime import datetime, timedelta
 from .liquidity_checker import LiquidityChecker
 from ....base.types import ChainType, TokenPrediction
 
 class PerformanceCalculator:
-    def __init__(self):
+    def __init__(self, storage_path: str = "storage/liquidity_data.json"):
+        """Initialize performance calculator with persistent storage
+        
+        Args:
+            storage_path: Path to store liquidity data
+        """
         self.liquidity_checker = LiquidityChecker()
-        self.initial_liquidity_cache: Dict[str, float] = {}  # Cache initial liquidity values
+        self.storage_path = storage_path
+        self.min_evaluation_time = 3600  # 1 hour minimum between initial and current check
+        
+        # Load cached values from storage
+        self.initial_liquidity_cache: Dict[str, Dict[str, Any]] = self._load_from_storage()
+        
+        # Ensure storage directory exists
+        os.makedirs(os.path.dirname(self.storage_path), exist_ok=True)
 
+    def _load_from_storage(self) -> Dict[str, Dict[str, Any]]:
+        """Load initial liquidity values from storage"""
+        try:
+            if os.path.exists(self.storage_path):
+                with open(self.storage_path, 'r') as f:
+                    return json.load(f)
+        except Exception as e:
+            bt.logging.warning(f"Failed to load liquidity data: {e}")
+        return {}
+
+    def _save_to_storage(self):
+        """Save initial liquidity values to storage"""
+        try:
+            with open(self.storage_path, 'w') as f:
+                json.dump(self.initial_liquidity_cache, f)
+        except Exception as e:
+            bt.logging.warning(f"Failed to save liquidity data: {e}")
 
     async def get_or_cache_initial_liquidity(
         self, 
         chain: ChainType, 
         token_addr: str, 
         pair_addr: str
-    ) -> float:
-        """Get or cache initial liquidity for a token pair"""
+    ) -> Dict[str, Any]:
+        """Get or cache initial liquidity for a token pair
+        
+        Returns:
+            Dict with 'value' and 'timestamp' fields
+        """
         cache_key = f"{chain.value}:{token_addr}:{pair_addr}"
-        if cache_key not in self.initial_liquidity_cache:
+        
+        # Check if we have this in cache
+        if cache_key in self.initial_liquidity_cache:
+            return self.initial_liquidity_cache[cache_key]
+            
+        # Not in cache, fetch initial data
+        try:
             metrics = await self.liquidity_checker.check_token_liquidity(
-                chain,
-                token_addr,
-                pair_addr
+                chain, token_addr, pair_addr
             )
-            self.initial_liquidity_cache[cache_key] = metrics.current_liquidity
-        return self.initial_liquidity_cache[cache_key]
-
+            
+            # Store with timestamp
+            self.initial_liquidity_cache[cache_key] = {
+                "value": metrics.current_liquidity,
+                "timestamp": time.time()
+            }
+            
+            # Save to persistent storage
+            self._save_to_storage()
+            
+            return self.initial_liquidity_cache[cache_key]
+            
+        except Exception as e:
+            bt.logging.error(f"Error getting initial liquidity: {e}")
+            return {"value": 0, "timestamp": time.time()}
 
     async def calculate_token_performance(self, prediction: TokenPrediction) -> float:
         """Calculate average percentage liquidity increase for a single prediction"""
-        total_percentage_change = 0.0
-        valid_tokens = 0
-        
-        for i, token_addr in enumerate(prediction.addresses):
-            pair_addr = prediction.pairAddresses[i] if i < len(prediction.pairAddresses) else None
-            if not pair_addr:
-                continue
+        try:
+            total_percentage_change = 0.0
+            valid_tokens = 0
+            
+            for i, token_addr in enumerate(prediction.addresses):
+                try:
+                    # Skip if index is out of range or pair is None
+                    if i >= len(prediction.pairAddresses) or not prediction.pairAddresses[i]:
+                        continue
+                    
+                    pair_addr = prediction.pairAddresses[i]
+                    
+                    # Get initial liquidity with timestamp (cached after first check)
+                    initial_data = await self.get_or_cache_initial_liquidity(
+                        prediction.chain,
+                        token_addr,
+                        pair_addr
+                    )
+                    
+                    initial_liquidity = initial_data["value"]
+                    initial_timestamp = initial_data["timestamp"]
+                    
+                    # Skip tokens with zero initial liquidity
+                    if initial_liquidity == 0:
+                        continue
+                        
+                    # Skip if not enough time has passed since initial check
+                    current_time = time.time()
+                    if current_time - initial_timestamp < self.min_evaluation_time:
+                        continue
+                    
+                    # Get current liquidity
+                    try:
+                        current_metrics = await self.liquidity_checker.check_token_liquidity(
+                            prediction.chain,
+                            token_addr,
+                            pair_addr
+                        )
+                        
+                        # Calculate percentage change
+                        percentage_change = ((current_metrics.current_liquidity - initial_liquidity) 
+                                         / initial_liquidity) * 100
+                        
+                        total_percentage_change += percentage_change
+                        valid_tokens += 1
+                        
+                    except Exception as e:
+                        bt.logging.warning(f"Error checking current liquidity for {token_addr}: {e}")
+                        continue
                 
-            # Get initial liquidity (cached after first check)
-            initial_liquidity = await self.get_or_cache_initial_liquidity(
-                prediction.chain,
-                token_addr,
-                pair_addr
-            )
-            
-            # Get current liquidity
-            current_metrics = await self.liquidity_checker.check_token_liquidity(
-                prediction.chain,
-                token_addr,
-                pair_addr
-            )
-            
-            # Skip if initial liquidity was 0 to avoid division by zero
-            if initial_liquidity == 0:
-                continue
+                except Exception as e:
+                    bt.logging.warning(f"Error processing token {token_addr}: {e}")
+                    continue
                 
-            # Calculate percentage change
-            percentage_change = ((current_metrics.current_liquidity - initial_liquidity) 
-                               / initial_liquidity) * 100
+            # Return average percentage change across all valid tokens
+            return total_percentage_change / valid_tokens if valid_tokens > 0 else 0.0
             
-            total_percentage_change += percentage_change
-            valid_tokens += 1
-            
-        # Return average percentage change across all valid tokens
-        return total_percentage_change / valid_tokens if valid_tokens > 0 else 0.0
+        except Exception as e:
+            bt.logging.error(f"Failed to calculate token performance: {e}")
+            return 0.0
 
-
+    # Rest of the code remains unchanged
     async def calculate_performance(
         self, 
         predictions: List[TokenPrediction], 

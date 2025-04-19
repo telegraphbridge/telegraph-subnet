@@ -1,6 +1,6 @@
 import bittensor as bt
 import numpy as np
-from typing import List
+from typing import List, Optional
 
 def check_uid_availability(
     metagraph: "bt.metagraph.Metagraph", uid: int, vpermit_tao_limit: int
@@ -13,16 +13,39 @@ def check_uid_availability(
     Returns:
         bool: True if uid is available, False otherwise
     """
-    # Filter non serving axons.
+    # Filter non serving axons
     if not metagraph.axons[uid].is_serving:
         return False
-    # Filter validator permit > 1024 stake.
+        
+    # Filter validator permit > 1024 stake
     if metagraph.validator_permit[uid]:
         if metagraph.S[uid] > vpermit_tao_limit:
             return False
-    # Available otherwise.
+            
+    # Available otherwise
     return True
 
-def get_miner_uids() -> np.ndarray:
-    """Get all miner uids"""
+def get_miner_uids() -> List[int]:
+    """Get miner UIDs for querying
     
+    Returns:
+        List[int]: List of miner UIDs
+    """
+    # Import config locally to avoid circular imports
+    from neurons.validator.config import get_config
+    
+    # Get config with subnet defaults
+    config = get_config()
+    
+    # Get the metagraph for this subnet
+    subtensor = bt.subtensor(config=config)
+    metagraph = subtensor.metagraph(netuid=config.netuid)
+    metagraph.sync(subtensor=subtensor)
+    
+    # Filter UIDs based on availability
+    available_uids = []
+    for uid in range(metagraph.n):
+        if check_uid_availability(metagraph, uid, config.neuron.vpermit_tao_limit):
+            available_uids.append(uid)
+            
+    return available_uids

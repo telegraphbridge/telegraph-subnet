@@ -1,5 +1,5 @@
 import bittensor as bt
-from typing import List, Optional
+from typing import List, Optional, Any, Dict
 from base.types import ChainType, TokenPrediction
 
 class PredictionSynapse(bt.Synapse):
@@ -9,12 +9,14 @@ class PredictionSynapse(bt.Synapse):
     Attributes:
         chain_name: Input chain name to query
         addresses: Response containing list of predicted addresses
+        pairAddresses: Response containing list of predicted pair addresses
     """
     # Required request input
     chain_name: str
     
     # Optional response output
     addresses: Optional[List[str]] = None
+    pairAddresses: Optional[List[str]] = None  # Added missing field
 
 class PerformanceSynapse(bt.Synapse):
     """
@@ -32,8 +34,18 @@ class PerformanceSynapse(bt.Synapse):
 
 def validate_prediction_response(synapse: PredictionSynapse) -> bool:
     """Validates if the prediction response meets minimum requirements"""
+    # Check addresses are present
     if not synapse.addresses or len(synapse.addresses) < 2:
         return False
+    
+    # Check pair addresses are present - essential for liquidity checking
+    if not synapse.pairAddresses or len(synapse.pairAddresses) < 2:
+        return False
+        
+    # Check we have matching pairs
+    if len(synapse.addresses) != len(synapse.pairAddresses):
+        return False
+        
     return True
 
 class TelegraphProtocol:
@@ -47,4 +59,25 @@ class TelegraphProtocol:
         """Validates if the response meets minimum requirements"""
         if not prediction.addresses or len(prediction.addresses) < 2:
             return False
-        return True 
+        if not prediction.pairAddresses or len(prediction.pairAddresses) < 2:
+            return False
+        return True
+
+
+class InferenceRequestSynapse(bt.Synapse):
+    """
+    Protocol for cross-subnet inference requests as described in Section 3.3
+    of the Telegraph whitepaper.
+    
+    Attributes:
+        inference_code: Code identifying target model/subnet
+        data: Input data for the model
+        response: Output from the target model
+    """
+    # Required request inputs
+    inference_code: str
+    data: Any
+    
+    # Optional response outputs
+    response: Optional[Any] = None
+    error: Optional[str] = None

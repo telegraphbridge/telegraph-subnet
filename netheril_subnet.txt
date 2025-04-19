@@ -1,0 +1,301 @@
+Telegraph cross-chain protocol
+black zero
+January 2025
+Abstract
+This paper introduces Telegraph, a novel cross-chain communication protocol designed to facilitate seamless interaction between smart contracts across multiple blockchains. The key features of Telegraph include:
+•	A decentralized network of validator nodes that control multi-signature smart contracts called ”Ports” on supported blockchains. • An accessible and affordable solution for developers to integrate cross-chain functionality with minimal code.
+•	Integration with the Bittensor blockchain, enabling AI inference capabilities directly from smart contracts.
+•	An invite-only node structure consisting of doxxed node runners, ensuring efficient message validation and Byzantine Fault Tolerance. • A native token (MSG) with a no-premine distribution model and a controlled supply mechanism.
+•	Continuous collection of DeFi price data and competitive training of price prediction AI models within the Telegraph subnet.
+Telegraph aims to democratize cross-chain communication while leveraging AI capabilities, positioning itself as a pivotal player in the evolving blockchain ecosystem.
+1	Introduction
+Telegraph is a blockchain oracle that aims to make cross-chain communication for smart contracts across multiple blockchains both easily accessible and affordable. Current blockchain bridge node networks keep their systems behind registrations and approvals, which in turn stifles innovation. With Telegraph, developers will finally have a cross-chain bridge that they can integrate into their project with a few lines of code. No registration required.
+The Telegraph oracle itself is an off-chain set of validator nodes that share control over multiple multi-signature smart contracts known as ”ports.” These ports act as relay points on each supported chain and always require a threshold of nodes to supply their signature to approve a transaction. Using this method, each node is able to retain privacy with control over their own private keys while being able to sign the messages off-chain. This means that only one final transaction has to be sent to the destination blockchain, rather than one transaction from each node.
+As an ecosystem, Telegraph nodes will be rewarded with a percentage from the fee of each successfully transmitted message. This reward is provided in the form of mined Telegraph tokens. Telegraph’s native token will be a no-premine token that is minted along with each successful message transmission and split amongst all participating nodes. These rewards will incentivize node operators to continue their maintenance and support for the Telegraph ecosystem.
+Telegraph is integrated with the Bittensor blockchain, enhancing its functionality by providing access to AI inference directly from smart contracts. This integration not only empowers developers to leverage advanced AI capabilities but also creates a marketplace of models within the Telegraph subnet on the Bittensor network. Telegraph nodes will continuously collect DeFi price data from all supported chains, using this data to train new price prediction AI models. Miners in the Telegraph subnet will then compete to train superior price predictor models, earning rewards for their contributions. This synergy between cross-chain communication and AI model training positions Telegraph as a pivotal player in the blockchain ecosystem, driving innovation and creating new revenue streams for other subnets on the Bittensor network.
+2	Protocol Architecture
+2.1	Smart Contracts (Ports)
+Telegraph’s smart contracts, known as Ports, are designed to be simple and user-friendly, making them accessible even to inexperienced developers. These Ports serve as the relay points on each supported blockchain, facilitating seamless cross-chain communication for smart contracts. By integrating Telegraph into their projects, developers can easily achieve cross-chain functionality with just a few lines of code, eliminating the need for complex setups and extensive blockchain knowledge.
+ 
+2.1.1	Port Functionality
+Each Port is a multi-signature smart contract that requires a threshold of Node signatures to approve a transaction. This multi-signature approach ensures the security and integrity of cross-chain messages. When a message is sent through the Telegraph network, it undergoes a verification process that leverages address retrieval from signatures signed by the nodes. This process uses the ecrecover function, a cryptographic method that retrieves the address associated with the signature, verifying the authenticity of the message.
+2.1.2	Verification Mechanism
+The verification mechanism works as follows:
+1.	Message Detection and Signing: Lead Nodes detect the message and sign it using their private keys.
+2.	Signature Collection: Nodes send their signatures to each other.
+3.	Merkle Tree Creation: Lead Nodes create a Merkle tree from the collected signatures once a threshold is reached.
+4.	Submission to Port: The Nodes submit the signed message in a predetermined manner, including the Merkle root, to the Port contract.
+5.	Address Retrieval and Verification: The Port contract uses the ecrecover function to retrieve the addresses from the Node signatures, ensuring they match the registered Node addresses.
+6.	Threshold Approval: Once the required threshold of valid Node signatures is met, and the Merkle root is verified, the message is approved for execution on the destination chain.
+2.1.3	Minted Rewards
+Telegraph incentivizes its nodes by minting rewards directly on the destination chain where the Port is located. Upon successful message transmission and approval, Telegraph tokens are minted and distributed in-whole to the signing nodes. This decentralized reward mechanism ensures that all nodes are fairly compensated for their efforts over time.
+2.2	Telegraph Validator Nodes
+Telegraph Validator nodes form the backbone of the network’s decentralized cross-chain communication protocol. The system employs a one-tier architecture consisting of nodes, implementing a robust mechanism for message validation, Byzantine Fault Tolerance (BFT), and network governance.
+2.2.1	Node Hierarchy and Roles
+The Telegraph network employs a hierarchical node structure to optimize performance and security. Nodes function as primary validators and coordinators, maintaining a cryptographically secured registry of other subscribed nodes. This registry includes public keys and subscription statuses, enabling efficient verification of incoming signatures. Nodes implement advanced signature aggregation algorithms and Merkle tree construction protocols, interfacing directly with Port smart contracts across various blockchains.
+2.2.2	Subscription Mechanism
+The subscription process for nodes involves a series of cryptographic operations. Initially, a node generates a registration message containing its public key, desired subscription duration, and a digital signature of this data using its private key. This message, accompanied by the requisite subscription fee, is transmitted to the port contract on the Ethereum network.
+Upon receipt of the payment, other nodes within the network will then deliberate offchain and vote on the approval of the new entrant. If denied, the entrant will receive a full refund. If approved, the new node’s information is added to the list of authorized signers in the contract and stored within the offchain database of each node.
+2.2.3	Message Validation Process
+The message validation process in the Telegraph network involves several cryptographic and distributed systems concepts:
+Message Detection - Nodes implement event listeners for supported blockchain networks. These listeners employ efficient polling mechanisms or websocket connections to detect cross-chain message events. Upon detection, nodes extract the message data and prepare it for signing.
+Signature Generation - Nodes employ the Elliptic Curve Digital Signature Algorithm (ECDSA) to sign messages. The resulting signature includes a timestamp to mitigate replay attacks, enhancing the network’s resilience against temporal vulnerabilities.
+Signature Collection and Aggregation - Nodes transmit their signatures to subscribed nodes via secure communication channels.
+Merkle Tree Construction - Upon reaching a predefined threshold of node signatures, each node initiates Merkle tree construction. This process employs a cryptographic hash function such as SHA-256 or Keccak-256. Leaf nodes are created by hashing individual signatures, while internal nodes are constructed through concatenation and hashing of child node values. The resulting Merkle root serves as a compact representation of the included signatures.
+Merkle Proof Generation - For each included signature, nodes generate a Merkle proof consisting of the sibling hashes along the path from the leaf to the root. These proofs, stored alongside the Merkle root, enable efficient verification of individual signatures without requiring the entire set of signatures.
+Node Submission - The node whose turn it is in the signing order creates a submission package encompassing the original message, Merkle root, it’s signature on both, and a bitmap indicating included node signatures from other nodes. This package is broadcast to other nodes and submitted to the relevant Port smart contract using blockchain-specific transaction protocols.
+Verification Process - Receiving nodes and the Port contract perform multistage verification. This includes validating the signing node’s signature, verifying the Merkle root against a threshold of known node public keys, and checking individual Merkle proofs for a randomly selected subset of included signatures. The Port contract mandates signatures from a quorum of authorized nodes before executing any cross-chain actions, ensuring consensus across the network.
+2.2.4	Byzantine Fault Tolerance and Governance
+The Telegraph network implements a robust Byzantine Fault Tolerance mechanism coupled with a decentralized governance model:
+Fault Detection - Nodes continuously monitor the network for anomalies, including invalid Merkle roots or proofs, signature repetitions, and signatures from unauthorized or expired nodes. This monitoring utilizes advanced anomaly detection algorithms to identify potential Byzantine behavior.
+Vote of No Confidence Upon detecting a fault, a node initiates a vote of no confidence by creating a cryptographically signed fault report. This report is broadcast to other nodes and a designated governance smart contract, triggering a network-wide alert.
+Manual Review Process The governance contract emits an event notifying all node owners of the pending vote. Node owners then retrieve the fault report and supporting evidence through decentralized storage protocols. A predefined review period of 24 or more hours allows for thorough examination of the presented evidence.
+Voting Mechanism Votes are submitted as signed messages to the governance contract.
+Node Removal Upon reaching the required supermajority, the governance contract executes a series of actions: it removes the implicated node’s public key from the list of authorized validators, emits a network-wide event signaling all participants to update their node lists, and potentially slashes the stake of the removed node if a staking mechanism is implemented.
+This comprehensive system leverages advanced cryptographic primitives, efficient data structures, and smart contract capabilities to ensure high security, scalability, and Byzantine Fault Tolerance in the Telegraph network. The synthesis of automated fault detection mechanisms with manual governance processes facilitates rapid response to potential issues while safeguarding against false positives and malicious attacks on network integrity.
+3	Integration with Bittensor Blockchain
+The integration of Telegraph with the Bittensor blockchain enhances the protocol’s functionality by providing access to AI inference directly from smart contracts. This connection allows developers to leverage advanced AI capabilities, creating a seamless and powerful combination of cross-chain communication and AI-driven insights. Within this section, the term ”Validators” refers to Bittensor Validators.
+3.1	A Versatile Marketplace Subnet
+At its core, the Telegraph subnet aims to be a versatile marketplace that offers access to various AI models available on other subnets within the Bittensor network. These models encompass a broad spectrum of applications, including image generation, text generation, natural language processing, and more. By integrating these diverse models, the Telegraph subnet provides developers with powerful tools to build and enhance their smart contracts, extending beyond the conventional capabilities of blockchain technology.
+3.1.1	Continuous Price Prediction Data
+In addition to offering access to a wide array of AI models, the Telegraph subnet continuously updates and provides price prediction data. This feature is particularly valuable for DeFi applications, where accurate and up-to-date price information is crucial. The integration of real-time price prediction data within the Telegraph subnet ensures that developers have access to the latest and most reliable information, enabling them to create more sophisticated and responsive financial products and services.
+3.1.2	Revenue Driver for Connected Subnets
+The Telegraph subnet’s role as a marketplace and provider of price prediction data effectively drives revenue for any connected subnet. By facilitating traffic from Telegraph nodes originating from external blockchains, the subnet attracts a steady flow of inference requests and data queries. This influx of activity generates economic value for the Bittensor network and its connected subnets, creating a mutually beneficial ecosystem.
+Validators within the Telegraph subnet play a crucial role in handling these inference requests and ensuring that the most appropriate and high-performing models are utilized. This not only enhances the performance and reliability of the Telegraph protocol but also promotes the use of models from other subnets, driving demand and generating revenue across the network.
+The integration of the Telegraph subnet within the Bittensor network fosters seamless collaboration and interoperability among different subnets. Developers and validators can easily access and utilize models from various subnets, creating a dynamic and interconnected environment. This collaboration enhances the capabilities of the Telegraph protocol, enabling it to offer more comprehensive and versatile solutions to its users.
+3.2	Onboarding Validators
+•	Selection Process: Validators interested in participating in the Model Inference Marketplace must undergo an onboarding process. This process ensures that only qualified and reliable validators are included. They will be required to run a script to enable support for receiving inference calls.
+•	Validator Registration: Upon successful onboarding, validators are registered in the marketplace, making them available for inference requests from Telegraph nodes. Each model they may support will be registered under separate specific inference codes. These codes are organized by inference type and act as a public ”phone-book” that anyone can use to quickly interact with participating validators.
+3.3	Handling Inference Requests
+1.	Inference Codes: When a request is sent in for inference, it is expected to be accompanied by a relevant inference code in order for the Telegraph nodes to know the appropriate model the request needs.
+2.	Payment Mechanism: Once a validator is selected, the payment for the inference service is processed. TAO (Bittensor tokens) are swapped for the validator’s supported token.
+3.	MultiSig Validation: The selected validator undergoes a stringent multisignature validation process. This involves the following steps:
+•	Signature Verification: Telegraph nodes verify that the signatures are from authorized Telegraph nodes using cryptographic techniques such as ecrecover.
+•	Threshold Approval: A threshold of valid signatures must be met for the request to be approved.
+•	Rejection of Invalid Requests: If the signatures do not meet the required threshold or are found to be invalid, the request is rejected.
+3.4	A new DeFi model: Netheril
+As referred to within the philosophy of Bittensor, the nature of energy within an optimal system trends towards a bottom-up approach in which efficient paths are formed through a process of reinforcing winners while withdrawing support for unproductive processes. We can see this in any natural system (the veins of a leaf, a lightning strike, etc.), where reward-seeking thermodynamic processes play out in a race to find the most energy-efficient paths. This philosophy has led us to ponder if these same reward-seeking mechanisms can be observed in, and applied to, financial interactions on any open-source blockchain (Ethereum, Solana, etc).
+Standard techniques seen within algorithms often involve observing the end result of these transactions, particularly on a DEX, and using particular signals and historic patterns within the token itself to determine the odds of a token purchase being profitable. While techniques such as these may show effectiveness in traditional markets with stable assets, many assets within a blockchain DEX may be considered ephemeral, rising and falling as quickly as a lightning strike. Hence, a stronger reward-seeking mechanism must be sought—one that does not strictly determine its path from the end result of the interactions (token volume, token liquidity, etc.) but instead from the actual drivers of the token’s energy dissipation. A bottom-up determination: the actual buyers.
+We are introducing a model known henceforth as Netheril, a model that chooses to observe the overall movement of the coin of a chain rather than the individual tokens launched within that chain’s DEXs. Netheril aggregates a living dataset formed by logging and classifying the movement of coins with the aim of determining wallets within the chain that meet certain requirements and exhibit ”winning” behaviors. By analyzing the past movement of all coin transactions on a chain and determining which wallets have increased in holdings over time, a weight can be placed on specific participants and their actions in order to determine what tokens to acquire based on the purchasers of said token and the history of the purchasers’ activity.
+3.5	Wallet Tracking Strategy
+3.5.1	Wallet Data Collection
+Netheril’s data collection uses specific heuristic filters to sift out ”low-quality” wallets through two specific value thresholds:
+•	The amount of the chain’s native coin held within the wallet.
+•	The amount of the chain’s native coin spent towards the acquisition of any one token on a DEX.
+The model is initially trained on the complete history of the chain and the buys on any DEX within that chain, storing historic data in this particular format:
+3.5.2	Wallet Profiling and Weighting
+Once data is collected, Netheril employs a profiling mechanism to assign a dynamic weight to each wallet based on its historical behavior. The profiling mechanism evaluates:
+•	Profitability: The total increase in holdings of the chain’s native coin over defined time slices.
+•	Transaction Frequency: The number of trades executed on DEXs over a specific period.
+Feature	Description
+Timestamp	When the transaction occurred.
+Wallet ID	Unique identifier for the wallet (anonymized).
+Token ID	Unique identifier for the token.
+Liquidity Pool Size	Total liquidity at the time of purchase.
+24h Trading Volume	Trading volume in the past 24 hours.
+Market Cap	Market cap at the time of purchase.
+Buy Amount	Value of the token purchased in ETH/native token.
+Historical ROI (Wallet)	Aggregated ROI for this wallet in the past n days.
+Trade Frequency (Wallet)	Number of trades this wallet made in the past n days.
+Diversity Score	Number of unique tokens this wallet has traded in the past n days.
+Price	Token price at the time of purchase.
+Historical Liquidity	Sequence of liquidity values leading up to the purchase.
+Historical Volume	Sequence of trading volume values leading up to the purchase.
+Table 1: Detailed structure of transaction data used by Netheril.
+•	Holding Diversity: The number of distinct tokens purchased by the wallet.
+•	Historical ROI: The average return on investment for tokens purchased by the wallet.
+Weights are dynamically adjusted to give more significance to recent wallet activity, ensuring that the model remains adaptable to changing market conditions.
+3.5.3	Inference Process
+For inference, Netheril utilizes its trained neural network to analyze recent transaction slices, focusing exclusively on DEX-related activity. The input includes:
+•	A time window of transaction data (e.g., last x hours).
+•	Features such as wallet weights, token liquidity, and trade volume at the time of purchase.
+The output is a ranked list of tokens, each assigned a probability score indicating its potential as a ”positive opportunity” based on the historical behavior of wallets acquiring the token. By leveraging this bottom-up approach, Netheril identifies opportunities driven by the actual behavior of successful market participants rather than relying solely on token-specific metrics like liquidity or volume trends.
+3.6	Incentivized Miner Competition
+With the addition of the Netheril model and its open dataset, we intend to automate its growth and accuracy through incentivized miner competition. Rarely can the most efficient path be found in a system supported by a singular entity. As seen in natural systems, energy must be distributed to various paths in order to determine where the least resistance and maximum reward lays. Telegraph’s subnet incorporates the same methodology by providing miners within the subnet free access to the continuously collected and curated transaction data scraped from each supported blockchain in order to give them an opportunity to train newer versions of a model for each chain.
+3.6.1	Competition Framework
+To foster a competitive environment and ensure participation from all parties, miners within the subnet are required to submit retrained versions of Netheril, on a chain of their choice, at regular intervals. The competition framework includes the following components:
+•	Benchmark Dataset: A subset of the transaction data is periodically curated to serve as a benchmark for model evaluation.
+•	Evaluation Metrics: Each submitted model is evaluated based on its accuracy, inference speed, and resource efficiency. Accuracy is measured against the benchmark dataset over a specified future period from the point of each prediction, while inference speed and resource efficiency ensure scalability and sustainability.
+•	Consensus Mechanism: Validators within the subnet assess the performance of competing models and reach a consensus on the preferred model using a weighted voting system based on a provided script that continuously logs the token predictions of each miner, per chain, and tracks the outcome of each token over a set period of time. Miners shown to have better short to mid-term performance will find their models being chosen to represent the models inferred for the chain they lead in.
+E
+3.6.2	Rewards and Incentives
+Miners are rewarded based on their contribution to improving the model. The reward structure includes:
+•	Preferred Miner Incentives: The miner whose model is selected as the preferred inference provider receives a higher yield from the subnet’s reward pool as well as additional yields in the form of the native telegraph token (MSG).
+•	Retraining Rewards: All miners who participate in retraining and submit valid models receive a base reward proportional to the quality of their submission.
+•	Dynamic Competition Fee: To prevent low-effort submissions and encourage genuine innovation, a dynamic fee is charged for each model submission. This fee is adjusted based on network activity and the number of submissions during a competition round.
+3.6.3	Long-term Benefits
+The competition mechanism ensures that Netheril remains adaptable and consistently achieves high performance on a chain by chain basis. By decentralizing the retraining process, the subnet leverages the collective intelligence of miners, driving continuous improvement in model inference capabilities. Moreover, the competition retains the spirit of efficient thermodynamic pathing as seen in the thesis of Bittensor’s core mission. Rarely can one party consistently determine the best outcome; In a competitive ecosystem like Bittensor, to slow down is to open up opportunities for competing entities.
+The Telegraph approach is that of a living entity reaching out with its various cells (validators, nodes, miners) into a data laden world, searching for easily acquirable resources. An ego-less, decentralized process that aims to make sure that anyone reliant on the Telegraph system finds themselves consistently generating profits with better alpha than any one expert could ever provide.
+4	Telegraph Token (MSG)
+The Telegraph ecosystem is underpinned by its native token, Telegraph (MSG), which employs a no-premine distribution model. This approach ensures a fair, transparent, and versatile token economy that aligns with the decentralized and open nature of blockchain technology. The MSG token is also hardcapped at 21 million tokens.
+The no-premine model for Telegraph tokens (MSG) offers several significant advantages over a premined model. It ensures that all participants have an equal opportunity to earn tokens from the outset, fostering a more balanced and equitable distribution. In a premined model, developers mine coins before they become public, often leading to centralization of the token supply and putting the general public at a disadvantage. By contrast, the no-premine model promotes fairness and aligns with the distributed and open nature of blockchain.
+Transparency is another key benefit of the no-premine model. With all token minting activities occurring in real-time on the blockchain, participants can monitor and verify the processes. This openness promotes trust within the community, which is crucial for establishing credibility and confidence, especially in the early stages of a cryptocurrency’s lifecycle.
+The no-premine model is highly adaptable to the cross-chain operations integral to the Telegraph protocol. For instance, if a bridge transfer involves different blockchains, such as from Ethereum (ETH) to Polygon (MATIC), Telegraph tokens are minted on the MATIC blockchain. From that point, it becomes the
+ 
+Figure 1: Telegraph token reward decay
+responsibility of the node’s owner to claim their accrued MSG from the MATIC chain.
+Telegraph tokens (MSG) are minted in response to each successful cross-chain message transmission. This minting process serves as an incentive mechanism for validators, rewarding them for their participation and contributions to the network. The more actively they participate, the more tokens they earn, fostering increased network participation and a sufficiently decentralized holder distribution for the token.
+4.1	Supply Decay Rate and Equation
+The reward decay function for Telegraph tokens (MSG) ensures that the supply remains controlled and predictable, aligning with the long-term goals of the ecosystem. This decay is modeled using an exponential decay function:
+    R(n) = R0 · e−k·n	(1)
+where R(n) represents the reward after n transactions, R0 is the initial reward (10 tokens), and k is the decay constant. By setting the decay constant k ≈ 6.907755 × 10−9, the reward system ensures that the reward per transaction decreases gradually over time but remains significant even after a billion transactions. Specifically, by the billionth transaction, the reward is still 0.01 tokens.
+The cumulative supply of Telegraph tokens is given by the integral of the reward function:
+(2)
+(3)
+Using the chosen decay constant, the cumulative supply equation becomes:
+        (4)
+        (5)
+This ensures that the total supply asymptotically approaches but never exceeds 21 million tokens. The graphical representation of these functions can be seen in Figure 1, illustrating the gradual reward decay and the cumulative supply increase over time.
+Figure 1 demonstrates that the initial rewards are significant but decrease exponentially, incentivizing early participation while ensuring long-term sustainability. The cumulative supply graph shows a smooth increase in token supply, aligning with the targeted maximum supply of 21 million tokens.
+These mechanisms are crucial for maintaining the balance and fairness of the Telegraph ecosystem, ensuring that the token economy remains robust and equitable across millions of transactions.
+4.2	Fair Distribution and Liquidity
+When a cross-chain request is detected, Telegraph nodes know whose turn in it is to submit the message onto the destination chain. This predetermined system ensures that nodes do not compete against each other, while rewarding node owners that begin validating at an earlier date. The tokens minted in the genesis transaction will be minted by the Telegraph foundation; each token of the initial 10 will be paired with a small amount of liquidity (100 dollars) on each supported blockchain. This action gives the token an initial price of $100 and lays the foundation for distributing the tokens to the general market.
+From that point, when nodes mint new tokens, they may opt to sell the tokens for what little liquidity is in the pool. These transactions will immediately crash the price and more liquidity will need to be deposited in order to entice node owners to sell. This is where Telegraph’s fees large role in constructing the protocol’s economy. Each cross-chain request charges a fee of $1 calculated in the source chain’s coin price. This fee is routed into the liquidity pool, slightly raising liquidity as more transactions occur. By the time the Telegraph network processes 1 million transactions, $1 million would have been distributed into the various supported liquidity pools.
+ 
+Figure 2: Distribution of tokens with each node joining 5,000 transactions after the other
+5	Conclusion
+The Telegraph cross-chain protocol delivers a robust solution for enabling seamless and secure cross-chain communication for smart contracts across multiple blockchains. Its core architecture leverages off-chain validator nodes and multisignature smart contracts (Ports), ensuring transaction integrity and validator privacy. This decentralized approach reduces complexity and facilitates easier integration for developers, democratizing access to cross-chain functionality.
+Telegraph’s integration with the Bittensor blockchain enhances its offerings by incorporating AI inference directly into smart contracts. This synergy allows for real-time AI-driven insights and creates a dynamic marketplace for AI models within the Telegraph subnet. The continuous collection of DeFi price data and the competitive environment for training price prediction models further enrich the protocol’s capabilities, providing valuable tools for financial applications.
+The use of a no-premine model for the Telegraph token (MSG) ensures fair and transparent token distribution, aligning with the principles of decentralization. The token’s controlled supply and reward decay mechanism promote long-term sustainability, incentivizing both early participation and ongoing engagement from validators.
+Telegraph addresses key challenges in blockchain interoperability with a userfriendly, secure, and efficient protocol. Its integration with AI capabilities and a fair token economy positions it as a transformative player in the blockchain space, driving innovation and fostering new opportunities across interconnected blockchain networks.
+
+
+Timestamp: The exact time when each transaction occurred.
+
+Wallet ID: An anonymized identifier for the wallet initiating the transaction.
+
+Token ID: A unique identifier for the token being traded.
+
+Liquidity Pool Size: The total liquidity available in the pool at the time of purchase.
+
+24h Trading Volume: The volume of trades in the past 24 hours for the pool.
+
+Market Cap: The market capitalization of the token at the time of the transaction.
+
+Buy Amount: The value of the token purchased (in ETH or the native token).
+
+Price: The token price at the time of purchase.
+
+Historical Liquidity Sequence: A time-series of liquidity values leading up to the transaction.
+
+Historical Volume Sequence: A time-series of volume values leading up to the transaction.
+
+
+{
+    "timestamp": "2025-04-07T21:03:15.000Z",
+    "walletAddress": "0xc8b5837592906d9d9396da9ab79e5c9f994dc976",
+    "tokenAddress": "0x4200000000000000000000000000000000000006",
+    "tokenSymbol": "WETH",
+    "liquidityPoolSize": 30107.21027379435,
+    "volume24hUsd": 31321117.4364,
+    "marketCapUsd": 90321.63082138305,
+    "buyAmount": 10000000,
+    "buyValueEth": 1000,
+    "priceInEth": 0.0001,
+    "priceInUsd": 0.15660558718200002,
+    "historicalLiquiditySequence": [
+      {
+        "timestamp": "2025-04-07T08:56:49.000Z",
+        "value": 1000
+      },
+      {
+        "timestamp": "2025-04-07T09:56:49.000Z",
+        "value": 1000
+      },
+      {
+        "timestamp": "2025-04-07T10:56:49.000Z",
+        "value": 1000
+      },
+      {
+        "timestamp": "2025-04-07T11:56:49.000Z",
+        "value": 1000
+      },
+      {
+        "timestamp": "2025-04-07T12:56:49.000Z",
+        "value": 1000
+      },
+      {
+        "timestamp": "2025-04-07T13:56:49.000Z",
+        "value": 1000
+      },
+      {
+        "timestamp": "2025-04-07T14:56:49.000Z",
+        "value": 1000
+      },
+      {
+        "timestamp": "2025-04-07T15:56:49.000Z",
+        "value": 1000
+      },
+      {
+        "timestamp": "2025-04-07T16:56:49.000Z",
+        "value": 1000
+      },
+      {
+        "timestamp": "2025-04-07T17:56:49.000Z",
+        "value": 1000
+      },
+      {
+        "timestamp": "2025-04-07T18:56:49.000Z",
+        "value": 1000
+      },
+      {
+        "timestamp": "2025-04-07T20:00:00.000Z",
+        "value": 1000
+      }
+    ],
+    "historicalVolumeSequence": [
+      {
+        "timestamp": "2025-04-07T08:56:49.000Z",
+        "value": 0
+      },
+      {
+        "timestamp": "2025-04-07T09:56:49.000Z",
+        "value": 0
+      },
+      {
+        "timestamp": "2025-04-07T10:56:49.000Z",
+        "value": 0
+      },
+      {
+        "timestamp": "2025-04-07T11:56:49.000Z",
+        "value": 0
+      },
+      {
+        "timestamp": "2025-04-07T12:56:49.000Z",
+        "value": 0
+      },
+      {
+        "timestamp": "2025-04-07T13:56:49.000Z",
+        "value": 0
+      },
+      {
+        "timestamp": "2025-04-07T14:56:49.000Z",
+        "value": 0
+      },
+      {
+        "timestamp": "2025-04-07T15:56:49.000Z",
+        "value": 0
+      },
+      {
+        "timestamp": "2025-04-07T16:56:49.000Z",
+        "value": 0
+      },
+      {
+        "timestamp": "2025-04-07T17:56:49.000Z",
+        "value": 0
+      },
+      {
+        "timestamp": "2025-04-07T18:56:49.000Z",
+        "value": 0
+      },
+      {
+        "timestamp": "2025-04-07T20:00:00.000Z",
+        "value": 0
+      }
+    ],
+    "poolAddress": "0x96fc3a5b53227758ee725b646622b2386518ca0f",
+    "transactionHash": "0x86df145c0529fb2fb992859fa6fed1d9415ad84693fd92763943da187d36e5a7",
+    "blockNumber": 28635224,
+    "isQualityWallet": true,
+    "walletEthBalance": 0.1972323053098013
+  }
