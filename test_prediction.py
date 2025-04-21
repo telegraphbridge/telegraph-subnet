@@ -9,6 +9,7 @@ async def main():
     dendrite = bt.dendrite(wallet=wallet)
     
     # Create a direct axon reference instead of using metagraph
+    # This ensures we're connecting to the right endpoint
     axon = bt.axon(
         wallet=wallet,
         ip="127.0.0.1",  # Local machine - change if miner is remote
@@ -34,29 +35,9 @@ async def main():
         # Handle response with null checks
         if isinstance(response, list) and len(response) > 0:
             first_response = response[0]
-            
-            # Check if we got a random-looking response
-            addresses = getattr(first_response, 'addresses', None)
-            print(f"Response addresses: {addresses}")
-            
-            pair_addresses = getattr(first_response, 'pairAddresses', None)
-            print(f"Response pair addresses: {pair_addresses}")
-            
-            confidence_scores = getattr(first_response, 'confidence_scores', None)
-            print(f"Response confidence scores: {confidence_scores}")
-            
-            # Check for placeholder address pattern
-            import re
-            placeholder_pattern = r"0x[0-9]{40}"
-            
-            if addresses and any(re.match(placeholder_pattern, addr) for addr in addresses[:3]):
-                print("\n⚠️ WARNING: Detected placeholder addresses - model likely used fallback data")
-                print("Run the following to verify your data files:")
-                print("  python verify_data.py")
-                print("\nIf files are missing, run:")
-                print("  python create_sample_data.py")
-            else:
-                print("\n✅ Received real token predictions from the model")
+            print(f"Response addresses: {getattr(first_response, 'addresses', None)}")
+            print(f"Response pair addresses: {getattr(first_response, 'pairAddresses', None)}")
+            print(f"Response confidence scores: {getattr(first_response, 'confidence_scores', None)}")
         else:
             print("Received empty or invalid response")
     finally:

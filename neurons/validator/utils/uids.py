@@ -1,49 +1,36 @@
 import bittensor as bt
 import numpy as np
-from typing import List, Optional
+from typing import List
 
-def check_uid_availability(
-    metagraph: "bt.metagraph.Metagraph", uid: int, vpermit_tao_limit: int
-) -> bool:
-    """Check if uid is available. The UID should be available if it is serving and has less than vpermit_tao_limit stake
-    Args:
-        metagraph (:obj: bt.metagraph.Metagraph): Metagraph object
-        uid (int): uid to be checked
-        vpermit_tao_limit (int): Validator permit tao limit
-    Returns:
-        bool: True if uid is available, False otherwise
-    """
-    # Filter non serving axons
+def check_uid_availability(metagraph: "bt.metagraph.Metagraph", uid: int, vpermit_tao_limit: int) -> bool:
+    # Only include nodes that are serving.
     if not metagraph.axons[uid].is_serving:
         return False
-        
-    # Filter validator permit > 1024 stake
-    if metagraph.validator_permit[uid]:
-        if metagraph.S[uid] > vpermit_tao_limit:
+    # Optionally filter based on stake; if a validator permit is active.
+    if hasattr(metagraph, 'validator_permit'):
+        if metagraph.validator_permit[uid] and metagraph.S[uid] > vpermit_tao_limit:
             return False
-            
-    # Available otherwise
     return True
 
 def get_miner_uids(metagraph=None) -> List[int]:
-    """Get list of active miner UIDs from the metagraph
-    
-    Args:
-        metagraph: Optional metagraph to use
-        
-    Returns:
-        List of miner UIDs
-    """
-    # If no miners are registered yet, return an empty list
-    if metagraph is None or metagraph.n == 0:
-        return []
-    
-    # Get all UIDs
-    all_uids = list(range(metagraph.n))
-    
-    # For now, return all UIDs except validators
-    # In production, you might want to filter by stake, activity, etc.
-    return [uid for uid in all_uids if uid not in metagraph.validators]
+    """Get UIDs of miners from the metagraph using availability checks."""
+    if metagraph is None:
+        try:
+            subtensor = bt.subtensor(network="test")
+            metagraph = subtensor.metagraph(netuid=349)
+            metagraph.sync(subtensor=subtensor)
+        except Exception as e:
+            bt.logging.error(f"Error getting metagraph: {e}")
+            return []
+
+    miner_uids = []
+    vpermit_limit = 1024  # Example limit
+    for uid in range(metagraph.n):
+        if check_uid_availability(metagraph, uid, vpermit_limit):
+            miner_uids.append(uid)
+
+    bt.logging.debug(f"Found {len(miner_uids)} miner UIDs")
+    return miner_uids
 
 # def get_miner_uids() -> List[int]:
 #     """Get miner UIDs for querying

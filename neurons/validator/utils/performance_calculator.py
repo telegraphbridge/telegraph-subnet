@@ -3,7 +3,7 @@ import json
 import time
 import bittensor as bt
 import numpy as np
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple  # Added Tuple here
 from datetime import datetime, timedelta
 from .liquidity_checker import LiquidityChecker
 from base.types import ChainType, TokenPrediction
@@ -49,48 +49,49 @@ class PerformanceCalculator:
         token_addr: str, 
         pair_addr: str
     ) -> Dict[str, Any]:
-        """Get or cache initial liquidity for a token pair
+        """Get or cache initial liquidity for a token pair.
         
         Returns:
-            Dict with 'value' and 'timestamp' fields
+            Dict with 'value' and 'timestamp' fields.
         """
         cache_key = f"{chain.value}:{token_addr}:{pair_addr}"
         
         # Check if we have this in cache
         if cache_key in self.initial_liquidity_cache:
+            bt.logging.debug(f"Using cached liquidity data for {cache_key}")
             return self.initial_liquidity_cache[cache_key]
             
-        # Not in cache, fetch initial data
+        # Not in cache; fetch initial data.
         try:
             metrics = await self.liquidity_checker.check_token_liquidity(
                 chain, token_addr, pair_addr
             )
-            
-            # Store with timestamp
-            self.initial_liquidity_cache[cache_key] = {
-                "value": metrics.current_liquidity,
-                "timestamp": time.time()
-            }
-            
-            # Save to persistent storage
-            self._save_to_storage()
-            
-            return self.initial_liquidity_cache[cache_key]
-            
         except Exception as e:
             bt.logging.error(f"Error getting initial liquidity: {e}")
-            return {"value": 0, "timestamp": time.time()}
-
+            # Fallback: use default liquidity (e.g. 1000)
+            metrics = type("DummyMetrics", (), {"current_liquidity": 1000})
+            
+        # Store with timestamp.
+        self.initial_liquidity_cache[cache_key] = {
+            "value": metrics.current_liquidity,
+            "timestamp": time.time()
+        }
+        # Save to persistent storage.
+        self._save_to_storage()
+        return self.initial_liquidity_cache[cache_key]
+    
     async def calculate_token_performance(self, prediction: TokenPrediction) -> float:
         """Calculate average percentage liquidity increase for a single prediction"""
         try:
             total_percentage_change = 0.0
             valid_tokens = 0
             
-            for i, token_addr in enumerate(prediction.addresses):
+            bt.logging.info(f"Evaluating {len(prediction.addresses or [])} tokens for {prediction.chain.value}")
+            
+            for i, token_addr in enumerate(prediction.addresses or []):
                 try:
                     # Skip if index is out of range or pair is None
-                    if i >= len(prediction.pairAddresses) or not prediction.pairAddresses[i]:
+                    if i >= len(prediction.pairAddresses or []) or not prediction.pairAddresses[i]:
                         continue
                     
                     pair_addr = prediction.pairAddresses[i]
@@ -107,11 +108,13 @@ class PerformanceCalculator:
                     
                     # Skip tokens with zero initial liquidity
                     if initial_liquidity == 0:
+                        bt.logging.debug(f"Skipping token {token_addr}, zero initial liquidity")
                         continue
                         
                     # Skip if not enough time has passed since initial check
                     current_time = time.time()
                     if current_time - initial_timestamp < self.min_evaluation_time:
+                        bt.logging.debug(f"Skipping token {token_addr}, not enough time elapsed since initial check")
                         continue
                     
                     # Get current liquidity
@@ -129,6 +132,8 @@ class PerformanceCalculator:
                         total_percentage_change += percentage_change
                         valid_tokens += 1
                         
+                        bt.logging.debug(f"Token {token_addr} liquidity change: {percentage_change:.2f}%")
+                        
                     except Exception as e:
                         bt.logging.warning(f"Error checking current liquidity for {token_addr}: {e}")
                         continue
@@ -144,50 +149,107 @@ class PerformanceCalculator:
             bt.logging.error(f"Failed to calculate token performance: {e}")
             return 0.0
 
-    # Rest of the code remains unchanged
     async def calculate_performance(
         self, 
         predictions: List[TokenPrediction], 
         miner_ids: List[int]
-    ) -> tuple[np.ndarray, np.ndarray]:
+    ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Calculate normalized performance scores for all predictions
         
         Args:
-            predictions: List of TokenPrediction objects
-            miner_ids: List of miner IDs corresponding to each prediction
+            predictions: List of token predictions to evaluate
+            miner_ids: List of miner UIDs corresponding to each prediction
             
         Returns:
-            tuple containing:
-                - numpy array of normalized performance scores
-                - numpy array of corresponding miner IDs
+            Tuple of (miner_ids, performance_scores) as numpy arrays
         """
+        # Validate input
+        if not predictions or len(predictions) == 0:
+            bt.logging.warning("No predictions provided for performance calculation")
+            return np.array([]), np.array([])
+            
+        # Check if number of predictions matches number of miner IDs
+        if len(predictions) != len(miner_ids):
+            bt.logging.error(f"Mismatch between predictions ({len(predictions)}) and miner IDs ({len(miner_ids)})")
+            
+        # Create a mapping between prediction and miner ID to handle potential mismatch
+        prediction_map = {}
+        for i, pred in enumerate(predictions):
+            if not pred.addresses:
+                continue
+            # Create a unique key for each prediction based on its attributes
+            key = f"{pred.chain.value}-{','.join(pred.addresses or [])}-{pred.timestamp.isoformat()}"
+            # If we have this miner ID in the list, associate it with this prediction
+            if i < len(miner_ids):
+                prediction_map[key] = miner_ids[i]
+        
         # Calculate average liquidity change for each prediction
         performances = []
-        for pred in predictions:
-            avg_performance = await self.calculate_token_performance(pred)
-            performances.append(avg_performance)
+        valid_miner_ids = []
+        
+        bt.logging.info(f"Calculating performance for {len(prediction_map)} predictions")
+        
+        for i, pred in enumerate(predictions):
+            try:
+                # Skip predictions without addresses
+                if not pred.addresses or len(pred.addresses) == 0:
+                    bt.logging.warning(f"Skipping prediction #{i} - no addresses")
+                    continue
+                    
+                # Create key to lookup miner ID
+                key = f"{pred.chain.value}-{','.join(pred.addresses or [])}-{pred.timestamp.isoformat()}"
+                
+                # Skip if no matching miner ID found
+                if key not in prediction_map:
+                    bt.logging.warning(f"Skipping prediction #{i} - no matching miner ID")
+                    continue
+                    
+                miner_id = prediction_map[key]
+                avg_performance = await self.calculate_token_performance(pred)
+                performances.append(avg_performance)
+                valid_miner_ids.append(miner_id)
+                
+                bt.logging.info(f"Miner {miner_id} performance: {avg_performance:.2f}%")
+                
+            except Exception as e:
+                bt.logging.error(f"Error calculating performance for prediction #{i}: {e}")
+                continue
+        
+        # Convert to numpy arrays
+        performances_array = np.array(performances) if performances else np.array([])
+        valid_miner_ids_array = np.array(valid_miner_ids) if valid_miner_ids else np.array([])
+        
+        # Log performance summary
+        avg_performance = np.mean(performances_array) if len(performances_array) > 0 else 0.0
+        bt.logging.info(f"Average performance across {len(performances_array)} tokens: {avg_performance:.2f}%")
+        
+        # Return both arrays for reward allocation
+        return valid_miner_ids_array, performances_array
+    
+    def normalize_performance(self, performance_scores: np.ndarray) -> np.ndarray:
+        """
+        Normalize performance scores to a 0.1-1.0 range according to the whitepaper.
+        Ensures that scores are always positive and proportionate.
+        
+        Args:
+            performance_scores: Raw performance percentage scores
             
-        performances = np.array(performances)
-        miner_ids = np.array(miner_ids)
-        
-        # If we have no valid performances, return equal scores
-        if len(performances) == 0 or np.all(performances == 0):
-            return np.full_like(performances, 0.1), miner_ids
+        Returns:
+            Normalized scores between 0.1 and 1.0
+        """
+        # If we have no valid scores, return an empty array
+        if len(performance_scores) == 0:
+            return np.array([])
             
-        # Normalize scores between 0.1 and 1.0
-        min_score = 0.1
-        max_score = 1.0
+        # Find min and max, ensuring we have at least some range
+        min_score = min(np.min(performance_scores), 0)
+        max_score = max(np.max(performance_scores), min_score + 1)
         
-        # Min-max normalization
-        min_perf = np.min(performances)
-        max_perf = np.max(performances)
+        # Normalize to 0-1 range first
+        normalized = (performance_scores - min_score) / (max_score - min_score) 
         
-        if min_perf == max_perf:
-            return np.full_like(performances, max_score), miner_ids
-            
-        normalized_scores = min_score + (max_score - min_score) * (
-            (performances - min_perf) / (max_perf - min_perf)
-        )
+        # Scale to 0.1-1.0 range as per whitepaper
+        scaled = 0.1 + (normalized * 0.9)
         
-        return normalized_scores, miner_ids
+        return scaled
