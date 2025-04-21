@@ -1,4 +1,5 @@
 import os
+import time
 import bittensor as bt
 import asyncio
 from typing import Dict, List, Tuple, Any
@@ -62,18 +63,25 @@ class TelegraphMiner(BaseMinerNeuron):
             if not synapse.chain_name:
                 bt.logging.warning("No chain specified in request")
                 synapse.chain_name = ChainType.BASE.value
-                
+            
+            # Standardize the chain name to match our model keys
+            chain_key = synapse.chain_name
+            
             # Check if we support this chain
-            if synapse.chain_name not in self.models:
-                bt.logging.warning(f"Unsupported chain: {synapse.chain_name}")
+            if chain_key not in self.models:
+                bt.logging.warning(f"Unsupported chain: {chain_key}")
                 synapse.addresses = [f"0x{i:040x}" for i in range(10)]
                 return synapse
             
             # Get chain type from name
-            chain = ChainType(synapse.chain_name)
+            try:
+                chain = ChainType(chain_key)
+            except ValueError:
+                bt.logging.warning(f"Invalid chain name: {chain_key}, using BASE")
+                chain = ChainType.BASE
             
             # Get predictions from model
-            prediction = await self.models[synapse.chain_name].predict(chain)
+            prediction = await self.models[chain_key].predict(chain)
             
             # Copy predictions to synapse
             synapse.addresses = prediction.addresses
