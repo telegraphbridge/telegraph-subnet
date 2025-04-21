@@ -6,7 +6,7 @@ import numpy as np
 from typing import List, Dict, Any
 from datetime import datetime, timedelta
 from .liquidity_checker import LiquidityChecker
-from ....base.types import ChainType, TokenPrediction
+from base.types import ChainType, TokenPrediction
 
 class PerformanceCalculator:
     def __init__(self, storage_path: str = "storage/liquidity_data.json"):

@@ -24,7 +24,9 @@ import traceback
 import bittensor as bt
 
 from base.neuron import BaseNeuron
-from utils.config import add_miner_args
+
+from base.utils.config import add_miner_args, check_config, add_args, config
+from base.utils.misc import ttl_get_block
 
 from typing import Union
 

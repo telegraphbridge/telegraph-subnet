@@ -25,27 +25,47 @@ def check_uid_availability(
     # Available otherwise
     return True
 
-def get_miner_uids() -> List[int]:
-    """Get miner UIDs for querying
+def get_miner_uids(metagraph=None) -> List[int]:
+    """Get list of active miner UIDs from the metagraph
     
+    Args:
+        metagraph: Optional metagraph to use
+        
     Returns:
-        List[int]: List of miner UIDs
+        List of miner UIDs
     """
-    # Import config locally to avoid circular imports
-    from neurons.validator.config import get_config
+    # If no miners are registered yet, return an empty list
+    if metagraph is None or metagraph.n == 0:
+        return []
     
-    # Get config with subnet defaults
-    config = get_config()
+    # Get all UIDs
+    all_uids = list(range(metagraph.n))
     
-    # Get the metagraph for this subnet
-    subtensor = bt.subtensor(config=config)
-    metagraph = subtensor.metagraph(netuid=config.netuid)
-    metagraph.sync(subtensor=subtensor)
+    # For now, return all UIDs except validators
+    # In production, you might want to filter by stake, activity, etc.
+    return [uid for uid in all_uids if uid not in metagraph.validators]
+
+# def get_miner_uids() -> List[int]:
+#     """Get miner UIDs for querying
     
-    # Filter UIDs based on availability
-    available_uids = []
-    for uid in range(metagraph.n):
-        if check_uid_availability(metagraph, uid, config.neuron.vpermit_tao_limit):
-            available_uids.append(uid)
+#     Returns:
+#         List[int]: List of miner UIDs
+#     """
+#     # Import config locally to avoid circular imports
+#     from neurons.validator.config import get_config
+    
+#     # Get config with subnet defaults
+#     config = get_config()
+    
+#     # Get the metagraph for this subnet
+#     subtensor = bt.subtensor(config=config)
+#     metagraph = subtensor.metagraph(netuid=config.netuid)
+#     metagraph.sync(subtensor=subtensor)
+    
+#     # Filter UIDs based on availability
+#     available_uids = []
+#     for uid in range(metagraph.n):
+#         if check_uid_availability(metagraph, uid, config.neuron.vpermit_tao_limit):
+#             available_uids.append(uid)
             
-    return available_uids
+#     return available_uids

@@ -3,7 +3,7 @@ import time
 import bittensor as bt
 import asyncio
 from typing import Dict, List, Tuple, Any
-from ...base.types import ChainType, TokenPrediction
+from base.types import ChainType, TokenPrediction
 from .models.base_l2_model import BaseTokenModel, LSTMTokenModel
 from base.miner import BaseMinerNeuron
 from telegraph.protocol import PredictionSynapse, InferenceRequestSynapse

@@ -1,9 +1,9 @@
 from typing import List, Optional
-from ....base.types import TokenPrediction, PredictionHistory
+from base.types import TokenPrediction, PredictionHistory
 import json
 import os
 from datetime import datetime
-from ....base.types import ChainType
+from base.types import ChainType
 
 class PredictionStore:
     def __init__(self, storage_path: str = "./predictions"):

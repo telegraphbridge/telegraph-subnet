@@ -1,10 +1,12 @@
 import time
 import bittensor as bt
 from neurons.miner.miner import TelegraphMiner
+SUBNET_UID = 349
 
 if __name__ == "__main__":
     # Parse command line arguments
     config = TelegraphMiner.config()
+    config.netuid = SUBNET_UID
     
     # Create and run the miner
     with TelegraphMiner(config) as miner:

@@ -163,6 +163,17 @@ def add_args(cls, parser):
             default=False,
         )
 
+def add_miner_args(cls, parser):
+    """Add miner specific arguments to parser"""
+
+    # Add any additional miner arguments not defined elsewhere
+    parser.add_argument(
+        "--miner.custom_param",
+        type=str,
+        default="",
+        help="Custom parameter specific to Telegraph miners."
+    )
+    return parser
 
 def config(cls):
     """

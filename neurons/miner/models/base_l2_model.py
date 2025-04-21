@@ -12,7 +12,7 @@ import pickle
 import glob
 from collections import defaultdict
 
-from ....base.types import ChainType, TokenPrediction
+from base.types import ChainType, TokenPrediction
 
 class BaseTokenModel(ABC):
     @abstractmethod

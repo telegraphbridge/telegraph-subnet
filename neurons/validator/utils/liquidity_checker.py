@@ -1,7 +1,7 @@
 from typing import Dict
 import os
 from dotenv import load_dotenv
-from ....base.types import ChainType, LiquidityMetrics
+from base.types import ChainType, LiquidityMetrics
 from web3 import Web3
 
 class LiquidityChecker:

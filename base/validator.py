@@ -33,9 +33,26 @@ from base.utils.weight_utils import (
     process_weights_for_netuid,
     convert_weights_and_uids_for_emit,
 )  # TODO: Replace when bittensor switches to numpy
-from mock import MockDendrite
-from utils.config import add_validator_args
+from base.utils.config import check_config, add_args, config  # If utils is inside base
 
+def add_validator_args(cls, parser):
+    """
+    Add validator specific arguments to the parser.
+    
+    Args:
+        cls: The validator class
+        parser: The argument parser
+    """
+    # These arguments are already defined in base/utils/config.py
+    # So we don't need to define them again here
+    
+    # Add any additional validator arguments not defined elsewhere
+    parser.add_argument(
+        "--validator.custom_param",
+        type=str,
+        default="",
+        help="Custom parameter specific to Telegraph validators."
+    )
 
 class BaseValidatorNeuron(BaseNeuron):
     """
@@ -56,10 +73,8 @@ class BaseValidatorNeuron(BaseNeuron):
         self.hotkeys = copy.deepcopy(self.metagraph.hotkeys)
 
         # Dendrite lets us send messages to other nodes (axons) in the network.
-        if self.config.mock:
-            self.dendrite = MockDendrite(wallet=self.wallet)
-        else:
-            self.dendrite = bt.dendrite(wallet=self.wallet)
+        self.dendrite = bt.dendrite(wallet=self.wallet)
+        
         bt.logging.info(f"Dendrite: {self.dendrite}")
 
         # Set up initial scoring weights for validation

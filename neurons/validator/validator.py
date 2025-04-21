@@ -1,3 +1,4 @@
+import asyncio
 import bittensor as bt
 import time
 import numpy as np
@@ -5,7 +6,7 @@ from typing import Dict, List, Any, Optional
 from base.validator import BaseValidatorNeuron
 from telegraph.protocol import PredictionSynapse, InferenceRequestSynapse
 from telegraph.registry import InferenceRegistry
-from ...base.types import ChainType, TokenPrediction
+from base.types import ChainType, TokenPrediction
 from .storage.prediction_store import PredictionStore
 from .utils.performance_calculator import PerformanceCalculator
 from .utils.uids import get_miner_uids
@@ -14,6 +15,8 @@ import random
 class TelegraphValidator(BaseValidatorNeuron):
     def __init__(self, config=None):
         super(TelegraphValidator, self).__init__(config=config)
+        self.inference_registry = InferenceRegistry()
+
         import os
         os.makedirs("data/transactions", exist_ok=True)
         os.makedirs("data/predictions", exist_ok=True)
@@ -26,128 +29,79 @@ class TelegraphValidator(BaseValidatorNeuron):
         
         # Initialize inference registry
         self.inference_registry = InferenceRegistry()
-        
-        # Setup axon handlers for cross-subnet communication
+        self._dendrite = bt.dendrite(wallet=self.wallet)
         if not self.config.neuron.axon_off:
             self.setup_inference_handlers()
     
     def setup_inference_handlers(self):
-        """Configure axon handlers for cross-subnet inference requests"""
-        if hasattr(self, 'axon') and self.axon:
-            # Attach handler for inference requests
-            self.axon.attach(
-                forward_fn=self.process_inference_request,
-                blacklist_fn=self.blacklist_inference_request,
-                priority_fn=self.priority_inference_request
-            )
-            bt.logging.info("Attached inference request handler to validator axon")
-    
-    async def process_inference_request(self, synapse: InferenceRequestSynapse) -> InferenceRequestSynapse:
-        """Process incoming inference requests from other networks/users
-        
-        This method handles requests as described in section 3.3 of the whitepaper
-        """
-        bt.logging.debug(f"Received inference request with code: {synapse.inference_code}")
-        
-        try:
-            # Validate inference code
-            if not synapse.inference_code or not self.inference_registry.is_valid_code(synapse.inference_code):
-                synapse.error = f"Invalid or unknown inference code: {synapse.inference_code}"
-                return synapse
-                
-            # Route request to target subnet
-            result = await self.route_inference_request(synapse.inference_code, synapse.data)
-            
-            # Handle routing errors
-            if isinstance(result, dict) and "error" in result:
-                synapse.error = result["error"]
-                return synapse
-                
-            # Set response
-            synapse.response = result
-            return synapse
-            
-        except Exception as e:
-            bt.logging.error(f"Error processing inference request: {str(e)}")
-            synapse.error = f"Internal error: {str(e)}"
-            return synapse
-    
-    async def route_inference_request(
-        self, 
-        inference_code: str, 
-        data: Any
-    ) -> Any:
-        """Route an inference request to the appropriate subnet
-        
-        Args:
-            inference_code: Code identifying the target model
-            data: Input data for the model
-            
-        Returns:
-            Model output or error information
-        """
-        # Get target subnet ID
+        def handle(syn: InferenceRequestSynapse) -> InferenceRequestSynapse:
+            return self.process_inference_request_sync(syn)
+        self.axon.attach(
+            forward_fn=handle,
+            # blacklist_fn=self.blacklist_inference_request,
+            priority_fn=self.priority_inference_request
+        )
+        bt.logging.info("Attached inference handler")
+
+    def process_inference_request_sync(self, syn: InferenceRequestSynapse) -> InferenceRequestSynapse:
+        loop = asyncio.get_event_loop()
+        return loop.run_until_complete(self.process_inference_request(syn))
+
+    async def process_inference_request(self, syn: InferenceRequestSynapse) -> InferenceRequestSynapse:
+        bt.logging.info(f"Incoming cross‑subnet request: {syn.inference_code}")
+        if not self.inference_registry.is_valid_code(syn.inference_code):
+            syn.error = f"Unknown code {syn.inference_code}"
+            return syn
+
+        syn.response = await self.route_inference_request(syn.inference_code, syn.data)
+        return syn
+
+
+    async def route_inference_request(self, inference_code: str, data: Any) -> Any:
         target_netuid = self.inference_registry.get_netuid(inference_code)
         if target_netuid is None:
-            return {"error": f"Unknown inference code: {inference_code}"}
-            
-        try:
-            # Create request synapse
-            synapse = InferenceRequestSynapse(
-                inference_code=inference_code,
-                data=data
-            )
-            
-            # Get target subnet metagraph 
-            target_metagraph = self.subtensor.metagraph(target_netuid)
-            target_metagraph.sync(subtensor=self.subtensor)
-            
-            # Select a validator from target subnet (using stake-weighted selection)
-            if len(target_metagraph.validators) == 0:
-                return {"error": f"No validators available on subnet {target_netuid}"}
-                    
-            # Use stake as weighting for selection
-            validator_stake = np.array([target_metagraph.S[uid] for uid in target_metagraph.validators])
-            total_stake = np.sum(validator_stake)
-            if total_stake == 0:
-                # Random selection if no stake
-                selected_idx = random.randint(0, len(target_metagraph.validators)-1)
-            else:
-                # Stake-weighted selection
-                probabilities = validator_stake / total_stake
-                selected_idx = np.random.choice(len(target_metagraph.validators), p=probabilities)
-                    
-            selected_uid = target_metagraph.validators[selected_idx]
-            target_axon = target_metagraph.axons[selected_uid]
-            
-            bt.logging.info(f"Routing request to subnet {target_netuid}, validator {selected_uid}")
-            
-            # Send request to target validator
-            response = await self.dendrite(
-                axons=[target_axon],
-                synapse=synapse,
-                deserialize=True,
-                timeout=15.0
-            )
-            
-            # Check for response errors
-            if hasattr(response, "error") and response.error:
-                return {"error": f"Target subnet error: {response.error}"}
-                
-            # Return the model output
-            return response.response
-            
-        except Exception as e:
-            bt.logging.error(f"Failed to route inference request: {str(e)}")
-            return {"error": f"Routing failed: {str(e)}"}
-    
-    async def blacklist_inference_request(self, synapse: InferenceRequestSynapse) -> tuple[bool, str]:
+            return {"error": f"Invalid code {inference_code}"}
+
+        bt.logging.info(f"Routing to subnet {target_netuid} code={inference_code}")
+
+        # fetch & sync that subnet's metagraph
+        subtensor = bt.subtensor(network=self.config.subtensor.network)
+        m = subtensor.metagraph(netuid=target_netuid)
+        m.sync(subtensor=subtensor)
+
+        # pick a validator uid
+        validators = m.validators if len(m.validators)>0 else list(range(m.n))
+        stakes = np.array([m.S[uid] for uid in validators], dtype=float)
+        if stakes.sum() > 0:
+            idx = np.random.choice(len(validators), p=stakes/stakes.sum())
+        else:
+            idx = random.randrange(len(validators))
+        uid = validators[idx]
+        ax = m.axons[uid]
+        bt.logging.info(f"Selected peer uid={uid}, hotkey={ax.hotkey}")
+
+        # build a fresh synapse to send
+        req = InferenceRequestSynapse(inference_code=inference_code, data=data)
+        # send and await
+        resp = await bt.dendrite(wallet=self.wallet)(
+            axons=[ax],
+            synapse=req,
+            deserialize=True,
+            timeout=30.0
+        )
+        # resp is a list
+        syn = resp[0] if isinstance(resp, list) else resp
+        if syn.error:
+            return {"error": syn.error}
+        # consumer subnets should have populated syn.response
+        return getattr(syn, "response", None)
+    def blacklist_inference_request(self, synapse: InferenceRequestSynapse) -> tuple[bool, str]:
         """Determine if an inference request should be blacklisted"""
         # For MVP, we don't blacklist inference requests
         # In production, implement token-gating or other access controls
-        return False, "Allowed"
+        return False, "ok"
         
-    async def priority_inference_request(self, synapse: InferenceRequestSynapse) -> float:
+    def priority_inference_request(self, synapse: InferenceRequestSynapse) -> float:
         """Determine priority of inference request"""
         # Give higher priority to validators on this subnet
         if synapse.dendrite.hotkey in self.metagraph.validators:
@@ -166,12 +120,20 @@ class TelegraphValidator(BaseValidatorNeuron):
             # Get available miners
             miner_uids = get_miner_uids()
             
+            # Filter miner UIDs to ensure they exist in metagraph
+            valid_miner_uids = []
+            for uid in miner_uids:
+                if uid < len(self.metagraph.axons):
+                    valid_miner_uids.append(uid)
+                else:
+                    bt.logging.warning(f"Miner UID {uid} out of range (metagraph size: {len(self.metagraph.axons)})")
+            
             # Check if we have miners to query
-            if len(miner_uids) == 0:
-                bt.logging.warning("No miners available to query")
+            if len(valid_miner_uids) == 0:
+                bt.logging.warning("No valid miners available to query")
                 return
                 
-            bt.logging.info(f"Querying {len(miner_uids)} miners")
+            bt.logging.info(f"Querying {len(valid_miner_uids)} miners")
             
             # Query only BASE chain for now
             chain_type = ChainType.BASE
@@ -181,7 +143,7 @@ class TelegraphValidator(BaseValidatorNeuron):
             
             # Query miners
             responses = await self.dendrite(
-                axons=[self.metagraph.axons[uid] for uid in miner_uids],
+                axons=[self.metagraph.axons[uid] for uid in valid_miner_uids],
                 synapse=synapse,
                 deserialize=True,
                 timeout=20.0  # Increased timeout for production
@@ -193,7 +155,7 @@ class TelegraphValidator(BaseValidatorNeuron):
             await self._store_predictions(responses)
             
             # Calculate rewards based on historical performance
-            rewards_dict = await self._calculate_rewards(miner_uids)
+            rewards_dict = await self._calculate_rewards(valid_miner_uids)
 
             # Convert dictionary to arrays for update_scores
             uids = np.array(list(rewards_dict.keys()))
@@ -212,8 +174,7 @@ class TelegraphValidator(BaseValidatorNeuron):
         except Exception as e:
             bt.logging.error(f"Error in validator forward: {str(e)}")
             import traceback
-            bt.logging.debug(traceback.format_exc())    
-
+            bt.logging.debug(traceback.format_exc())
 
     async def _store_predictions(self, responses):
         """Store predictions for each miner
