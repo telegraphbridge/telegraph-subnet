@@ -99,12 +99,6 @@ class TelegraphMiner(BaseMinerNeuron):
                         bt.logging.info(f"First few addresses: {synapse.addresses[:3]}")
                         bt.logging.info(f"Sample confidence: {list(synapse.confidence_scores.items())[:2]}")
                         
-                        # Check if these are likely random addresses (detect placeholder format)
-                        placeholder_pattern = r"0x[0-9a-f]{40}"
-                        import re
-                        if all(re.match(r"0x[0-9]{40}", addr) for addr in synapse.addresses[:3]):
-                            bt.logging.warning("Detected placeholder addresses - model likely used fallback data")
-                        
                         return synapse
                     else:
                         bt.logging.warning("Model returned empty prediction, falling back to dummy data")
