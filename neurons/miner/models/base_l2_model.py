@@ -11,8 +11,9 @@ import threading
 import pickle
 import glob
 from collections import defaultdict
-
-from ....base.types import ChainType, TokenPrediction
+import traceback
+import glob
+from base.types import ChainType, TokenPrediction
 
 class BaseTokenModel(ABC):
     @abstractmethod
@@ -55,32 +56,29 @@ class NetherilLSTM(nn.Module):
         self.sigmoid = nn.Sigmoid()
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass through the network
-        
-        Args:
-            x: Input tensor of shape (batch_size, seq_len, input_size)
-            
-        Returns:
-            Output tensor of shape (batch_size, 1) with token scores
-        """
-        # Initialize hidden state with zeros
+        """Forward pass through the network"""
+        unbatched = False
+        if x.dim() == 2:                  # (seq_len, input_size)
+            x = x.unsqueeze(0)            # (1, seq_len, input_size)
+            unbatched = True
+
         batch_size = x.size(0)
         h0 = torch.zeros(self.num_layers, batch_size, self.hidden_size, device=x.device)
         c0 = torch.zeros(self.num_layers, batch_size, self.hidden_size, device=x.device)
-        
-        # Forward propagate LSTM
-        out, _ = self.lstm(x, (h0, c0))
-        
-        # Use only the output from the last time step
-        out = out[:, -1, :]
-        
-        # Pass through fully connected layers
-        out = self.fc1(out)
+
+        out, _ = self.lstm(x, (h0, c0))  # (batch, seq_len, hidden)
+        out = out[:, -1, :]              # (batch, hidden)
+
+        # use the declared fc1/fc2 layers
+        out = self.fc1(out)              # -> hidden/2
         out = self.relu(out)
         out = self.dropout(out)
-        out = self.fc2(out)
-        out = self.sigmoid(out)
-        
+        out = self.fc2(out)              # -> 1
+        out = self.sigmoid(out)          # -> (batch, 1)
+
+        if unbatched:
+            out = out.squeeze(0)         # back to (1,) or scalar
+
         return out
 
 class LSTMTokenModel(BaseTokenModel):
@@ -194,63 +192,97 @@ class LSTMTokenModel(BaseTokenModel):
         except Exception as e:
             bt.logging.error(f"Error saving token pairs: {str(e)}")
             
+    # Modify the _load_model method to add better error handling and debugging:
     def _load_model(self, model_path: str):
-        """Load pre-trained model weights"""
+        """Load pre-trained model weights with better error handling"""
         try:
+            bt.logging.info(f"Attempting to load model from: {model_path}")
+            if not os.path.exists(model_path):
+                bt.logging.error(f"Model file not found at: {model_path}")
+                return
+                
+            # Print file size for debugging
+            file_size = os.path.getsize(model_path)
+            bt.logging.info(f"Model file size: {file_size} bytes")
+            
             checkpoint = torch.load(model_path, map_location=self.device)
+            bt.logging.info(f"Model loaded successfully. Keys: {checkpoint.keys()}")
+            
+            if 'model_state_dict' not in checkpoint:
+                bt.logging.error(f"Invalid model file - missing 'model_state_dict' key")
+                return
+                
             self.model.load_state_dict(checkpoint['model_state_dict'])
             self.model.eval()  # Set to evaluation mode
+            bt.logging.info(f"Model weights loaded successfully")
             
             # Load token scoring stats if available
             if 'token_scores' in checkpoint:
                 self.token_scores = checkpoint['token_scores']
+                bt.logging.info(f"Loaded {len(self.token_scores)} token scores")
                 
             # Load wallet cache if available
             if 'wallet_cache' in checkpoint:
                 self.wallet_cache = checkpoint['wallet_cache']
+                bt.logging.info(f"Loaded {len(self.wallet_cache)} wallet entries")
                 
         except Exception as e:
             bt.logging.error(f"Error loading model: {str(e)}")
+            bt.logging.error(traceback.format_exc())
             bt.logging.warning("Using initialized model instead")
-            
+
+    # Modify the _load_transaction_data method to better handle file paths and errors:
     def _load_transaction_data(self, chain: ChainType) -> List[Dict[str, Any]]:
-        """Load transaction data for the specified chain
-        
-        This function loads transaction data from files in the data directory.
-        In production, this would load actual transaction data collected from the chain.
-        
-        Args:
-            chain: Chain to load transaction data for
-            
-        Returns:
-            List of transaction data dictionaries
-        """
+        """Load transaction data for the specified chain with better debugging"""
         chain_name = chain.name.lower()
         transactions = []
         
         try:
             # Look for transaction files matching the chain
             pattern = os.path.join(self.data_dir, f"{chain_name}_transactions_*.json")
+            bt.logging.info(f"Looking for transaction files matching: {pattern}")
+            
             files = glob.glob(pattern)
+            if not files:
+                # Try alternative pattern (uppercase)
+                pattern = os.path.join(self.data_dir, f"{chain_name.upper()}_transactions_*.json")
+                bt.logging.info(f"Trying alternative pattern: {pattern}")
+                files = glob.glob(pattern)
+                
+            # List all files in directory for debugging
+            all_files = os.listdir(self.data_dir)
+            bt.logging.info(f"All files in data directory: {all_files}")
             
             if not files:
+                # Try looking for any transaction file
+                pattern = os.path.join(self.data_dir, "*_transactions_*.json")
+                files = glob.glob(pattern)
+                if files:
+                    bt.logging.warning(f"Found non-matching transaction files: {files}")
+                
                 bt.logging.warning(f"No transaction data found for chain {chain_name}")
                 return []
                 
             # Load the most recent file (sorted by timestamp in filename)
             files.sort(reverse=True)
             latest_file = files[0]
+            bt.logging.info(f"Loading transaction data from: {latest_file}")
             
             with open(latest_file, 'r') as f:
                 transactions = json.load(f)
                 
-            bt.logging.info(f"Loaded {len(transactions)} transactions from {latest_file}")
+            bt.logging.info(f"Loaded {len(transactions)} transactions")
+            
+            # Validate transaction data format
+            if transactions:
+                bt.logging.info(f"Sample transaction keys: {list(transactions[0].keys())}")
             
             return transactions
         except Exception as e:
             bt.logging.error(f"Error loading transaction data: {str(e)}")
+            bt.logging.error(traceback.format_exc())
             return []
-            
+                
     def _calculate_wallet_stats(self, transactions: List[Dict[str, Any]]) -> Dict[str, Dict[str, float]]:
         """Calculate wallet statistics from transaction data
         
@@ -439,107 +471,38 @@ class LSTMTokenModel(BaseTokenModel):
             bt.logging.error(f"Error preprocessing transactions: {str(e)}")
             return torch.zeros((0, self.input_size), dtype=torch.float32).to(self.device)
             
-    def _get_top_tokens(self, 
-                      transactions: List[Dict[str, Any]], 
-                      scores: torch.Tensor, 
-                      k: int = 10) -> Tuple[List[str], List[str], Dict[str, float]]:
-        """Get top-k tokens based on model predictions
-        
-        Args:
-            transactions: List of transaction data dictionaries
-            scores: Prediction scores for each transaction
-            k: Number of top tokens to select
-            
-        Returns:
-            Tuple containing lists of token addresses, pair addresses, and confidence scores
-        """
+    def _get_top_tokens(self, transactions: list, scores: torch.Tensor, k: int = 10) -> Tuple[list, list, dict]:
         try:
-            # Create mapping of tokens to scores
-            token_to_score = {}
-            for i, tx in enumerate(transactions):
-                if i >= len(scores):
-                    break
-                    
-                token = tx.get('tokenID')
-                if not token:
-                    continue
-                    
-                # Get prediction score for this transaction
-                score = float(scores[i].item())
-                
-                # Update token score (use max if token appears multiple times)
-                if token in token_to_score:
-                    token_to_score[token] = max(token_to_score[token], score)
-                else:
-                    token_to_score[token] = score
-                    
-                # Update token_scores cache with a weighted average
-                alpha = 0.7  # Weight for new score
-                old_score = self.token_scores.get(token, score)
-                self.token_scores[token] = alpha * score + (1 - alpha) * old_score
-                
-                # Cache pair address if available
-                if 'poolAddress' in tx and token not in self.pair_lookup:
-                    self.pair_lookup[token] = tx['poolAddress']
-                    
-            # Get top-k tokens by score
-            sorted_tokens = sorted(token_to_score.items(), key=lambda x: x[1], reverse=True)
-            top_tokens = sorted_tokens[:k]
-            
-            # Extract addresses and scores
+            score_list = scores.squeeze().tolist()
+            # Ensure score_list is a list
+            if isinstance(score_list, float):
+                score_list = [score_list]
+            # Lower threshold if desired (here using 0.001)
+            valid_indices = [i for i, score in enumerate(score_list) if score > 0.001]
+            bt.logging.info(f"Valid token indices: {valid_indices}")
+            if not valid_indices:
+                bt.logging.warning("No valid token scores found")
+                return ([], [], {})
+            # Sort valid tokens by score (highest first)
+            sorted_indices = sorted(valid_indices, key=lambda i: score_list[i], reverse=True)
             token_addresses = []
-            confidence_scores = {}
-            
-            for token, score in top_tokens:
-                token_addresses.append(token)
-                confidence_scores[token] = score
-                
-            # Get pair addresses for top tokens
             pair_addresses = []
-            for token in token_addresses:
-                if token in self.pair_lookup:
-                    pair_addresses.append(self.pair_lookup[token])
-                else:
-                    # If no pair address is known, use a default strategy
-                    # In production, we would query this information from the chain
-                    pair_addresses.append(token)  # Use token address as fallback
-                    
-            # If we don't have enough tokens, use cached scores to fill in
-            if len(token_addresses) < k and len(self.token_scores) > 0:
-                # Sort cached scores
-                cached_tokens = sorted(self.token_scores.items(), key=lambda x: x[1], reverse=True)
-                
-                # Add tokens not already in our list
-                for token, score in cached_tokens:
-                    if token not in token_addresses and len(token_addresses) < k:
-                        token_addresses.append(token)
-                        confidence_scores[token] = score
-                        
-                        # Get or create pair address
-                        if token in self.pair_lookup:
-                            pair_addresses.append(self.pair_lookup[token])
-                        else:
-                            pair_addresses.append(token)  # Use token address as fallback
-                            
-            # If we still don't have enough tokens, generate placeholders
-            while len(token_addresses) < k:
-                # Create a placeholder token address
-                placeholder = f"0x{'0'*40}"
-                token_addresses.append(placeholder)
-                pair_addresses.append(placeholder)
-                confidence_scores[placeholder] = 0.0
-                
+            confidence_scores = {}
+            # Only return tokens that are not placeholders
+            for idx in sorted_indices[:k]:
+                tx = transactions[idx]
+                token = tx.get('tokenID')
+                pair = tx.get('poolAddress')
+                # Only accept if model provided a nonzero token; otherwise skip it.
+                if token and token != "0x0000000000000000000000000000000000000000":
+                    token_addresses.append(token)
+                    pair_addresses.append(pair or "0x0000000000000000000000000000000000000000")
+                    confidence_scores[token] = score_list[idx]
+            bt.logging.info(f"Selected tokens: {token_addresses}")
             return token_addresses, pair_addresses, confidence_scores
-            
         except Exception as e:
-            bt.logging.error(f"Error getting top tokens: {str(e)}")
-            
-            # Generate placeholder addresses in case of error
-            token_addresses = [f"0x{i:040x}" for i in range(10, 10+k)]
-            pair_addresses = [f"0x{i:040x}" for i in range(100, 100+k)]
-            confidence_scores = {addr: 0.5 for addr in token_addresses}
-            
-            return token_addresses, pair_addresses, confidence_scores
+            bt.logging.error(f"Error in _get_top_tokens: {str(e)}")
+            return ([], [], {})
             
     async def predict(self, chain: ChainType) -> TokenPrediction:
         """Generate token predictions for the specified chain

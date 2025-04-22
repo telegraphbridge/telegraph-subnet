@@ -15,6 +15,7 @@ class InferenceRegistry:
             "root": {"netuid": 0, "description": "τ root"},
             
             # Other subnets in order of netuid
+            "nextplace": {"netuid": 48, "description": "α nextplace real estate predictions"},
             "apex": {"netuid": 1, "description": "α apex"},
             "templar": {"netuid": 3, "description": "γ templar"},
             "targon": {"netuid": 4, "description": "δ targon"},

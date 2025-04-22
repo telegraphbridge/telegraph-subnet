@@ -1,10 +1,12 @@
 import time
 import bittensor as bt
 from neurons.validator.validator import TelegraphValidator
+SUBNET_UID = 349
 
 if __name__ == "__main__":
     # Parse command line arguments
     config = TelegraphValidator.config()
+    config.netuid = SUBNET_UID
     
     # Create and run the validator
     with TelegraphValidator(config) as validator:

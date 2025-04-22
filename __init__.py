@@ -16,6 +16,7 @@
 # DEALINGS IN THE SOFTWARE.
 
 __version__ = "0.0.0"
+__spec_version__ = 100
 version_split = __version__.split(".")
 __spec_version__ = (
     (1000 * int(version_split[0]))
@@ -28,12 +29,13 @@ from . import protocol
 from . import base
 from . import validator
 from . import utils
-from .protocol import InferenceRequestSynapse, PredictionSynapse
+from .protocol import InferenceRequestSynapse, PredictionSynapse, RealEstateSynapse
 from .registry import InferenceRegistry
 from .client import TelegraphClient
 
 __all__ = [
     'InferenceRequestSynapse',
+    'RealEstateSynapse',
     'PredictionSynapse',
     'InferenceRegistry',
     'TelegraphClient',

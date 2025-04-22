@@ -3,7 +3,7 @@ import time
 import bittensor as bt
 import asyncio
 from typing import Dict, List, Tuple, Any
-from ...base.types import ChainType, TokenPrediction
+from base.types import ChainType, TokenPrediction
 from .models.base_l2_model import BaseTokenModel, LSTMTokenModel
 from base.miner import BaseMinerNeuron
 from telegraph.protocol import PredictionSynapse, InferenceRequestSynapse
@@ -48,54 +48,85 @@ class TelegraphMiner(BaseMinerNeuron):
             bt.logging.error(f"Failed to initialize model: {str(e)}")
             # Use default model as fallback
             self.models[ChainType.BASE.value] = LSTMTokenModel()
-    
+
     async def forward(self, synapse: PredictionSynapse) -> PredictionSynapse:
-        """Process a request for token predictions
-        
-        Args:
-            synapse: The request synapse containing the chain name
-            
-        Returns:
-            PredictionSynapse with token predictions
-        """
+        """Process incoming prediction requests with better debugging and error handling."""
         try:
-            # Validate chain name
-            if not synapse.chain_name:
-                bt.logging.warning("No chain specified in request")
-                synapse.chain_name = ChainType.BASE.value
+            # Ensure chain_name has a value
+            chain_key = getattr(synapse, 'chain_name', None) or "BASE"
+            bt.logging.info(f"Processing prediction request for chain: {chain_key}")
             
-            # Standardize the chain name to match our model keys
-            chain_key = synapse.chain_name
+            # Debug existing files
+            data_dir = "data/transactions"
+            if os.path.exists(data_dir):
+                files = os.listdir(data_dir)
+                bt.logging.info(f"Files in data directory: {files}")
+                
+                # Check for model file specifically
+                model_path = os.path.join(data_dir, "best_model.pth")
+                if os.path.exists(model_path):
+                    bt.logging.info(f"Model file exists at {model_path}, size: {os.path.getsize(model_path)} bytes")
+                else:
+                    bt.logging.warning(f"Model file not found at {model_path}")
+                    
+                # Check for transaction data
+                transaction_files = [f for f in files if "transactions" in f and f.endswith(".json")]
+                bt.logging.info(f"Transaction files: {transaction_files}")
+            else:
+                bt.logging.warning(f"Data directory {data_dir} does not exist")
             
-            # Check if we support this chain
-            if chain_key not in self.models:
-                bt.logging.warning(f"Unsupported chain: {chain_key}")
-                synapse.addresses = [f"0x{i:040x}" for i in range(10)]
-                return synapse
+            # Initialize response fields to ensure they're never None
+            synapse.addresses = []
+            synapse.pairAddresses = []
+            synapse.confidence_scores = {}
             
-            # Get chain type from name
-            try:
-                chain = ChainType(chain_key)
-            except ValueError:
-                bt.logging.warning(f"Invalid chain name: {chain_key}, using BASE")
-                chain = ChainType.BASE
+            # Even if model isn't available, we'll generate dummy data
+            model = self.models.get(chain_key)
+            bt.logging.info(f"Using model: {model.__class__.__name__ if model else 'None'}")
             
-            # Get predictions from model
-            prediction = await self.models[chain_key].predict(chain)
+            if model:
+                try:
+                    # Use the model to generate predictions
+                    bt.logging.info("Calling model.predict()...")
+                    prediction = await model.predict(ChainType(chain_key))
+                    
+                    if prediction and prediction.addresses:
+                        synapse.addresses = prediction.addresses
+                        synapse.pairAddresses = prediction.pairAddresses or []
+                        synapse.confidence_scores = prediction.confidence_scores or {}
+                        
+                        bt.logging.info(f"Prediction success: {len(synapse.addresses)} addresses")
+                        bt.logging.info(f"First few addresses: {synapse.addresses[:3]}")
+                        bt.logging.info(f"Sample confidence: {list(synapse.confidence_scores.items())[:2]}")
+                        
+                        return synapse
+                    else:
+                        bt.logging.warning("Model returned empty prediction, falling back to dummy data")
+                except Exception as e:
+                    bt.logging.error(f"Model prediction error: {str(e)}")
+                    import traceback
+                    bt.logging.error(traceback.format_exc())
             
-            # Copy predictions to synapse
-            synapse.addresses = prediction.addresses
-            synapse.pairAddresses = prediction.pairAddresses
-            synapse.confidence_scores = prediction.confidence_scores
-            
-            return synapse
+            # Fallback dummy predictions (always runs if model fails)
+            import random
+            bt.logging.warning("Using fallback random address generation")
+            # Generate random hex addresses (40 chars after 0x)
+            synapse.addresses = [f"0x{''.join(random.choices('0123456789abcdef', k=40))}" for _ in range(10)]
+            synapse.pairAddresses = [f"0x{''.join(random.choices('0123456789abcdef', k=40))}" for _ in range(10)]
+            synapse.confidence_scores = {addr: random.uniform(0.1, 0.9) for addr in synapse.addresses}
+            bt.logging.info(f"Generated {len(synapse.addresses)} dummy addresses as fallback")
             
         except Exception as e:
-            bt.logging.error(f"Error in forward: {str(e)}")
-            # Return empty prediction in case of error
+            bt.logging.error(f"Critical error in forward method: {str(e)}")
+            import traceback
+            bt.logging.error(traceback.format_exc())
+            # Even in worst case, return something valid
             synapse.addresses = [f"0x{i:040x}" for i in range(10)]
-            return synapse
-    
+            synapse.pairAddresses = [f"0x{i+100:040x}" for i in range(10)]
+            synapse.confidence_scores = {addr: 0.5 for addr in synapse.addresses}
+            
+        return synapse
+
     async def blacklist(self, synapse: PredictionSynapse) -> Tuple[bool, str]:
         """Determine if a request should be blacklisted
         
@@ -110,12 +141,14 @@ class TelegraphMiner(BaseMinerNeuron):
             return False, "Allowed"
             
         # Otherwise, only allow registered validators
+        
         if synapse.dendrite.hotkey in self.metagraph.hotkeys:
             return False, "Registered user"
+        return True, "Not a registered user"
             
         # Blacklist all others
         return True, "Not a registered user"
-    
+
     async def priority(self, synapse: PredictionSynapse) -> float:
         """Determine priority for a request
         
@@ -125,8 +158,12 @@ class TelegraphMiner(BaseMinerNeuron):
         Returns:
             float: Priority value (higher is more important)
         """
+        # Get validator hotkeys or use top stake holders instead of validators attribute
+        validator_uids = [i for i in range(self.metagraph.n) if self.metagraph.S[i] > 0]
+        validator_hotkeys = [self.metagraph.hotkeys[uid] for uid in validator_uids]
+        
         # Give validators highest priority
-        if synapse.dendrite.hotkey in self.metagraph.validators:
+        if synapse.dendrite.hotkey in validator_hotkeys:
             return 1.0
             
         # Registered users get medium priority
