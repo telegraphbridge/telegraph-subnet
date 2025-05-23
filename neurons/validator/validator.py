@@ -12,6 +12,10 @@ from .storage.prediction_store import PredictionStore
 from .utils.performance_calculator import PerformanceCalculator
 from .utils.uids import get_miner_uids
 from datetime import datetime
+from .utils.consensus_manager import ConsensusManager
+from .utils.leaderboard import Leaderboard
+from .utils.submission_validator import SubmissionValidator
+from .utils.competition_fee_manager import CompetitionFeeManager
 
 class TelegraphValidator(BaseValidatorNeuron):
     def __init__(self, config=None):
@@ -27,6 +31,10 @@ class TelegraphValidator(BaseValidatorNeuron):
         # Reinitialize inference registry
         self.inference_registry = InferenceRegistry()
         self._dendrite = bt.dendrite(wallet=self.wallet)
+        self.consensus_manager = ConsensusManager()
+        self.leaderboard = Leaderboard()
+        self.submission_validator = SubmissionValidator()
+        self.competition_fee_manager = CompetitionFeeManager()
         if not self.config.neuron.axon_off:
             self.setup_inference_handlers()
 
@@ -160,7 +168,17 @@ class TelegraphValidator(BaseValidatorNeuron):
             # 6. Calculate rewards based ONLY on the current round's valid responses
             # Pass the valid responses and their corresponding UIDs
             rewards_dict = await self._calculate_rewards(valid_responses, current_uids)
-
+            await self.run_consensus_and_select_preferred(rewards_dict)
+            bt.logging.info(f"Rewards calculated: {rewards_dict}")
+            for uid, score in rewards_dict.items():
+                # --- MSG BASE REWARD HOOK ---
+                # TODO: Mint and distribute base MSG reward to all valid miners here.
+                # Example:
+                # self.msg_reward_manager.reward_base_miner(uid, score)
+                bt.logging.info(f"[MSG REWARD] TODO: Mint/distribute base MSG to miner UID {uid} (score: {score:.4f})")
+                
+            await self.update_leaderboard(rewards_dict)
+            
             # 7. Prepare rewards and UIDs for score update
             uids_to_update = np.array(list(rewards_dict.keys()), dtype=int)
             rewards_to_update = np.array(list(rewards_dict.values()), dtype=float)
@@ -184,38 +202,58 @@ class TelegraphValidator(BaseValidatorNeuron):
             # Optional: Implement specific error handling or recovery logic here
             await asyncio.sleep(60) # Wait before retrying after a major error
 
-
     async def _store_predictions(self, responses: List[PredictionSynapse], uids: List[int]):
-        """Store predictions for each miner from the current round."""
         from datetime import datetime
         if len(responses) != len(uids):
-             bt.logging.error(f"Mismatch storing predictions: {len(responses)} responses, {len(uids)} UIDs")
-             return # Avoid processing if lists don't match
+            bt.logging.error(f"Mismatch storing predictions: {len(responses)} responses, {len(uids)} UIDs")
+            return
 
+        recent_hashes = set()
+        num_submissions = len(responses)
+        fee = self.competition_fee_manager.calculate_fee(num_submissions)
+    
         for i, response in enumerate(responses):
             uid = uids[i]
             try:
-                # Ensure addresses exist before creating TokenPrediction
                 if not getattr(response, "addresses", None):
                     bt.logging.warning(f"Skipping storing prediction for UID {uid}: Missing addresses.")
                     continue
 
                 confidence_scores = response.confidence_scores if hasattr(response, "confidence_scores") else {}
                 chain_name = response.chain_name if hasattr(response, "chain_name") and response.chain_name else ChainType.BASE.value
+                inference_time = getattr(response, "inference_time_ms", 0)
+                memory_usage = getattr(response, "memory_usage_mb", 0)
+                bt.logging.info(f"Miner UID {uid} inference time: {inference_time} ms, memory usage: {memory_usage} MB")
 
                 prediction = TokenPrediction(
                     chain=ChainType(chain_name),
                     addresses=response.addresses,
                     pairAddresses=getattr(response, 'pairAddresses', []),
-                    timestamp=datetime.now(), # Use current time for storage timestamp
-                    confidence_scores=confidence_scores
+                    timestamp=datetime.now(),
+                    confidence_scores=confidence_scores,
+                    inference_time_ms=inference_time,
+                    memory_usage_mb=memory_usage
                 )
+
+                # Validate submission
+                error = self.submission_validator.validate(prediction)
+                if error:
+                    bt.logging.warning(f"Rejected prediction from UID {uid}: {error}")
+                    continue
+                if self.submission_validator.is_duplicate(prediction, recent_hashes):
+                    bt.logging.warning(f"Duplicate prediction from UID {uid} detected, skipping.")
+                    continue
+                recent_hashes.add(hash((tuple(prediction.addresses), prediction.timestamp)))
+                self.competition_fee_manager.enforce_fee(uid, fee)
+
                 await self.prediction_store.store_prediction(uid, prediction)
                 bt.logging.debug(f"Stored prediction from UID {uid} for current round.")
             except Exception as e:
                 bt.logging.error(f"Error storing prediction for UID {uid}: {str(e)}")
                 import traceback
-                bt.logging.debug(traceback.format_exc()) # Keep debug for detailed trace
+                bt.logging.debug(traceback.format_exc())
+
+
 
     async def _calculate_rewards(self, responses: List[PredictionSynapse], uids: List[int]) -> Dict[int, float]:
         """Calculate rewards based ONLY on the current round's responses."""
@@ -268,3 +306,41 @@ class TelegraphValidator(BaseValidatorNeuron):
             rewards[uid] = normalized_scores[i]
 
         return rewards
+
+    async def run_consensus_and_select_preferred(self, rewards_dict: Dict[int, float]):
+        """
+        Runs consensus voting and selects the preferred miner for this round.
+        """
+        round_id = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+        # Each validator votes for miners proportional to their reward (performance)
+        votes = rewards_dict.copy()  # {miner_uid: weight}
+        self.consensus_manager.record_votes(round_id, votes)
+        preferred_uid = self.consensus_manager.select_preferred_miner(round_id, votes)
+        if preferred_uid is not None:
+            bt.logging.info(f"[Consensus] Preferred miner selected: UID {preferred_uid}")
+            # --- MSG REWARD HOOK ---
+            # TODO: Mint and distribute MSG reward to preferred miner here.
+            # Example:
+            # self.msg_reward_manager.reward_preferred_miner(preferred_uid, amount)
+            bt.logging.info(f"[MSG REWARD] TODO: Mint/distribute MSG to preferred miner UID {preferred_uid}")
+    
+        else:
+            bt.logging.warning("[Consensus] No preferred miner selected this round.")
+        # TODO: Integrate MSG reward logic for preferred miner here
+        return preferred_uid
+
+    async def update_leaderboard(self, rewards_dict: Dict[int, float]):
+        """
+        Updates the leaderboard with current miner stats, preferred miner, and consensus history.
+        """
+        # Gather miner stats
+        miner_stats = {}
+        for uid, score in rewards_dict.items():
+            miner_stats[uid] = {
+                "normalized_score": score,
+                # Optionally add more stats here (e.g., last submission, accuracy, etc.)
+            }
+        preferred_uid = self.consensus_manager.get_preferred_miner()
+        consensus_history = self.consensus_manager.state.get("history", [])
+        self.leaderboard.update(miner_stats, preferred_uid, consensus_history)
+        bt.logging.info("[Leaderboard] Leaderboard updated with latest stats.")

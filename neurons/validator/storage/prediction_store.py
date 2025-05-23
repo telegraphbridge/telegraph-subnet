@@ -61,7 +61,19 @@ class PredictionStore:
         file_path = os.path.join(self.storage_path, f"miner_{miner_uid}.json")
         if not os.path.exists(file_path):
             return None
-
+        
+        
+        with open(file_path, 'w') as f:
+            json.dump([{
+                'chain': p.chain.value,
+                'addresses': p.addresses,
+                'pairAddresses': p.pairAddresses,
+                'timestamp': p.timestamp.isoformat(),
+                'confidence_scores': p.confidence_scores,
+                'inference_time_ms': getattr(p, 'inference_time_ms', 0),
+                'memory_usage_mb': getattr(p, 'memory_usage_mb', 0)
+            } for p in all_predictions], f)
+        
         with open(file_path, 'r') as f:
             try:
                 data = json.load(f)

@@ -15,6 +15,8 @@ class TokenPrediction:
     pairAddresses: List[str]
     timestamp: datetime
     confidence_scores: Dict[str, float]
+    inference_time_ms: int = 0
+    memory_usage_mb: int = 0
 
 @dataclass
 class PredictionHistory:

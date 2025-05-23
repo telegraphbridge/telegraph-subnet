@@ -14,6 +14,10 @@ from collections import defaultdict
 import traceback
 import glob
 from base.types import ChainType, TokenPrediction
+from neurons.miner.utils.submission_tracker import SubmissionTracker
+import hashlib
+import time
+import psutil
 
 class BaseTokenModel(ABC):
     @abstractmethod
@@ -505,69 +509,94 @@ class LSTMTokenModel(BaseTokenModel):
             return ([], [], {})
             
     async def predict(self, chain: ChainType) -> TokenPrediction:
-        """Generate token predictions for the specified chain
-        
-        Args:
-            chain: Chain to predict tokens for
-            
-        Returns:
-            TokenPrediction: Prediction result with token addresses and confidence scores
-        """
-        # Use lock for thread safety
+        """Generate token predictions for the specified chain, with timing and resource metrics."""
         with self.lock:
             try:
+                # --- Start timing and resource usage ---
+                start_time = time.perf_counter()
+                process = psutil.Process(os.getpid())
+                start_mem = process.memory_info().rss
+
                 # Load transaction data for the specified chain
                 transactions = self._load_transaction_data(chain)
-                
                 if not transactions:
                     bt.logging.warning(f"No transaction data available for chain {chain}")
-                    # Return default prediction with empty data
                     return TokenPrediction(
                         chain=chain,
                         addresses=[f"0x{i:040x}" for i in range(10, 20)],
                         pairAddresses=[f"0x{i:040x}" for i in range(100, 110)],
                         timestamp=datetime.now(),
-                        confidence_scores={f"0x{i:040x}": 0.5 for i in range(10, 20)}
+                        confidence_scores={f"0x{i:040x}": 0.5 for i in range(10, 20)},
+                        inference_time_ms=0,
+                        memory_usage_mb=0
                     )
-                
-                # Preprocess transaction data
+
                 features = self._preprocess_transactions(transactions)
-                
-                # Make prediction
                 with torch.no_grad():
                     scores = self.model(features)
-                
-                # Get top tokens based on prediction scores
+
                 addresses, pair_addresses, confidence_scores = self._get_top_tokens(
                     transactions=transactions,
                     scores=scores,
                     k=10
                 )
-                
-                # Periodically save token pair data
+
+                # --- End timing and resource usage ---
+                end_time = time.perf_counter()
+                end_mem = process.memory_info().rss
+                inference_time_ms = int((end_time - start_time) * 1000)
+                memory_usage_mb = int((end_mem - start_mem) / (1024 * 1024))
+
+                bt.logging.info(f"[LSTMTokenModel] Inference time: {inference_time_ms} ms, Memory usage: {memory_usage_mb} MB")
+
                 self._save_token_pairs()
-                
-                # Create and return prediction
+
                 return TokenPrediction(
                     chain=chain,
                     addresses=addresses,
                     pairAddresses=pair_addresses,
                     timestamp=datetime.now(),
-                    confidence_scores=confidence_scores
+                    confidence_scores=confidence_scores,
+                    inference_time_ms=inference_time_ms,
+                    memory_usage_mb=memory_usage_mb
                 )
-                
+
             except Exception as e:
                 bt.logging.error(f"Error making prediction: {str(e)}")
-                
-                # Return default prediction in case of error
                 return TokenPrediction(
                     chain=chain,
                     addresses=[f"0x{i:040x}" for i in range(10, 20)],
                     pairAddresses=[f"0x{i:040x}" for i in range(100, 110)],
                     timestamp=datetime.now(),
-                    confidence_scores={f"0x{i:040x}": 0.5 for i in range(10, 20)}
+                    confidence_scores={f"0x{i:040x}": 0.5 for i in range(10, 20)},
+                    inference_time_ms=0,
+                    memory_usage_mb=0
                 )
-                
+                            
+    def get_model_hash(self) -> str:
+        """Returns a hash of the current model weights for uniqueness tracking."""
+        try:
+            weights = self.model.state_dict()
+            weights_bytes = b"".join([v.cpu().numpy().tobytes() for v in weights.values()])
+            return hashlib.sha256(weights_bytes).hexdigest()
+        except Exception as e:
+            bt.logging.error(f"[LSTMTokenModel] Error hashing model: {e}")
+            return "unknown"
+
+    def submit_model(self, chain: ChainType, dataset_version: str, min_interval_minutes: int = 60):
+        """
+        Handles model submission: checks interval, records submission, and logs.
+        """
+        if not hasattr(self, "submission_tracker"):
+            self.submission_tracker = SubmissionTracker()
+        if not self.submission_tracker.is_submission_allowed(chain.value, min_interval_minutes):
+            bt.logging.warning(f"[LSTMTokenModel] Submission blocked: too soon for {chain.value}")
+            return False
+        model_hash = self.get_model_hash()
+        self.submission_tracker.record_submission(chain.value, model_hash, dataset_version)
+        bt.logging.info(f"[LSTMTokenModel] Model submitted for {chain.value} with hash {model_hash} and dataset {dataset_version}")
+        return True
+
     def save_model(self, path: str):
         """Save model weights and associated data to file
         
