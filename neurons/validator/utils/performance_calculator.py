@@ -1,320 +1,566 @@
-import os
-import json
+import asyncio
 import time
-import bittensor as bt
 import numpy as np
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 from datetime import datetime, timedelta
-import traceback # Import traceback for detailed error logging
+from collections import defaultdict
+import bittensor as bt
 
-# Assuming LiquidityChecker is correctly defined in its own file
-from .liquidity_checker import LiquidityChecker
-# Assuming base types are correctly defined
 from base.types import ChainType, TokenPrediction, LiquidityMetrics
+from .liquidity_checker import LiquidityChecker
 
 class PerformanceCalculator:
     """
-    Calculates the performance of miner predictions based on token liquidity changes.
-    It caches initial liquidity values to avoid redundant RPC calls and ensures
-    a minimum evaluation time window.
+    Enhanced performance calculator that integrates with model evaluation framework
+    and implements whitepaper-compliant Netheril performance metrics.
     """
-    def __init__(self, storage_path: str = "storage/liquidity_data.json", min_evaluation_time_seconds: int = 3600):
-        """
-        Initialize the PerformanceCalculator.
-
-        Args:
-            storage_path: Path to the JSON file for caching initial liquidity data.
-            min_evaluation_time_seconds: Minimum time (in seconds) that must pass
-                                         before evaluating a token's performance. Defaults to 1 hour.
-        """
+    
+    def __init__(self):
         self.liquidity_checker = LiquidityChecker()
-        self.storage_path = storage_path
-        self.min_evaluation_time = min_evaluation_time_seconds # Use the argument
-
-        # Load cached initial liquidity values from storage
-        self.initial_liquidity_cache: Dict[str, Dict[str, Any]] = self._load_from_storage()
-
-        # Ensure the storage directory exists
-        storage_dir = os.path.dirname(self.storage_path)
-        if storage_dir and not os.path.exists(storage_dir):
-             os.makedirs(storage_dir, exist_ok=True)
-             bt.logging.info(f"Created storage directory: {storage_dir}")
-
-    def _load_from_storage(self) -> Dict[str, Dict[str, Any]]:
-        """Load initial liquidity values from the JSON storage file."""
-        try:
-            if os.path.exists(self.storage_path):
-                with open(self.storage_path, 'r') as f:
-                    data = json.load(f)
-                    bt.logging.info(f"Loaded {len(data)} initial liquidity records from {self.storage_path}")
-                    return data
-            else:
-                bt.logging.info(f"Liquidity cache file not found at {self.storage_path}. Starting fresh cache.")
-        except json.JSONDecodeError:
-            bt.logging.error(f"Error decoding JSON from {self.storage_path}. Starting fresh cache.")
-        except Exception as e:
-            bt.logging.warning(f"Failed to load liquidity data from {self.storage_path}: {e}. Starting fresh cache.")
-        return {}
-
-    def _save_to_storage(self):
-        """Save the current initial liquidity cache to the JSON storage file."""
-        try:
-            with open(self.storage_path, 'w') as f:
-                json.dump(self.initial_liquidity_cache, f, indent=4) # Add indent for readability
-            # bt.logging.debug(f"Saved {len(self.initial_liquidity_cache)} liquidity records to {self.storage_path}")
-        except Exception as e:
-            bt.logging.error(f"Failed to save liquidity data to {self.storage_path}: {e}")
-
-    async def get_or_cache_initial_liquidity(
-        self,
-        chain: ChainType,
-        token_addr: str,
-        pair_addr: str
-    ) -> Dict[str, Any]:
-        """
-        Get initial liquidity for a token pair, using cache if available, otherwise fetch and cache.
-
-        Args:
-            chain: The blockchain chain type.
-            token_addr: The token address.
-            pair_addr: The liquidity pool pair address.
-
-        Returns:
-            A dictionary containing 'value' (initial liquidity) and 'timestamp' (when it was fetched).
-            Returns a default value if fetching fails.
-        """
-        # Standardize addresses for cache key consistency
-        token_addr_std = token_addr.lower()
-        pair_addr_std = pair_addr.lower()
-        cache_key = f"{chain.value}:{token_addr_std}:{pair_addr_std}"
-
-        # Check cache first
-        if cache_key in self.initial_liquidity_cache:
-            # bt.logging.trace(f"Using cached liquidity data for {cache_key}")
-            return self.initial_liquidity_cache[cache_key]
-
-        # Not in cache, fetch initial liquidity data
-        bt.logging.debug(f"Fetching initial liquidity for {cache_key}...")
-        try:
-            metrics = await self.liquidity_checker.check_token_liquidity(
-                chain, token_addr_std, pair_addr_std # Use standardized addresses
-            )
-            initial_liquidity_value = metrics.current_liquidity
-            bt.logging.info(f"Fetched initial liquidity for {cache_key}: {initial_liquidity_value}")
-
-        except Exception as e:
-            bt.logging.error(f"Error getting initial liquidity for {cache_key}: {e}")
-            # Fallback: Use a default value (e.g., 0) to indicate failure or unknown state
-            initial_liquidity_value = 0.0
-            bt.logging.warning(f"Using fallback initial liquidity (0.0) for {cache_key} due to error.")
-
-        # Store the fetched (or fallback) value with the current timestamp
-        current_timestamp = time.time()
-        self.initial_liquidity_cache[cache_key] = {
-            "value": initial_liquidity_value,
-            "timestamp": current_timestamp
+        
+        # Performance tracking
+        self.historical_scores = defaultdict(list)  # uid -> list of scores
+        self.performance_windows = {}  # uid -> sliding window data
+        self.wallet_performance_cache = {}  # Cache wallet performance data
+        
+        # Scoring configuration based on whitepaper
+        self.scoring_weights = {
+            'accuracy': 0.35,           # Primary metric: prediction accuracy
+            'liquidity_alpha': 0.25,    # Liquidity correlation performance
+            'wallet_profiling': 0.20,   # Quality of wallet-based predictions
+            'response_efficiency': 0.10, # Speed and resource efficiency
+            'consistency': 0.10         # Historical consistency
         }
+        
+        # Performance thresholds
+        self.min_predictions_threshold = 3
+        self.historical_window_hours = 168  # 7 days
+        self.performance_decay_factor = 0.95  # Slight decay for older performance
+        
+        bt.logging.info("Enhanced PerformanceCalculator initialized with model evaluation integration")
 
-        # Save updated cache to persistent storage
-        self._save_to_storage()
-
-        return self.initial_liquidity_cache[cache_key]
-
-    async def calculate_token_performance(self, prediction: TokenPrediction) -> float:
+    async def calculate_performance_with_evaluation(self, predictions: List[TokenPrediction], 
+                                                uids: List[int], round_id: str = None) -> Tuple[List[int], List[float]]:
         """
-        Calculate the average percentage liquidity change for tokens in a single prediction.
-
-        Args:
-            prediction: A TokenPrediction object containing addresses and pair addresses.
-
-        Returns:
-            The average percentage change in liquidity across all valid, evaluatable tokens
-            in the prediction. Returns 0.0 if no tokens can be evaluated.
+        Calculate performance using the comprehensive model evaluation framework.
+        This replaces the basic performance calculation with comprehensive evaluation.
         """
-        total_percentage_change = 0.0
-        valid_tokens_evaluated = 0
+        try:
+            if not hasattr(self, 'model_evaluator'):
+                from .model_evaluator import ModelEvaluationFramework
+                from .benchmark_dataset import BenchmarkDatasetManager
+                from .liquidity_checker import LiquidityChecker
+                
+                # Initialize evaluation framework
+                benchmark_manager = BenchmarkDatasetManager()
+                liquidity_checker = LiquidityChecker()
+                self.model_evaluator = ModelEvaluationFramework(benchmark_manager, liquidity_checker)
+                
+                bt.logging.info("Initialized ModelEvaluationFramework in PerformanceCalculator")
+            
+            # Prepare submissions for evaluation
+            submissions = [(uid, pred) for uid, pred in zip(uids, predictions)]
+            
+            # Run comprehensive evaluation
+            evaluation_results = await self.model_evaluator.evaluate_models(
+                submissions, round_id or f"perf_calc_{int(time.time())}"
+            )
+            
+            if not evaluation_results:
+                bt.logging.warning("Model evaluation returned no results, falling back to basic calculation")
+                return await self.calculate_performance(predictions, uids)
+            
+            # Enhance evaluation results with historical performance and Netheril-specific metrics
+            enhanced_scores = await self._enhance_with_historical_performance(evaluation_results)
+            
+            # Extract UIDs and scores from enhanced results
+            evaluated_uids = [result.miner_uid for result in evaluation_results]
+            enhanced_final_scores = [enhanced_scores.get(uid, 0.0) for uid in evaluated_uids]
+            
+            # Update historical tracking
+            self._update_performance_tracking(evaluation_results, enhanced_scores)
+            
+            bt.logging.info(f"Enhanced performance calculation completed: {len(evaluation_results)} miners evaluated")
+            bt.logging.info(f"Enhanced score range: {min(enhanced_final_scores):.4f} - {max(enhanced_final_scores):.4f}")
+            
+            return evaluated_uids, enhanced_final_scores
+            
+        except Exception as e:
+            bt.logging.error(f"Error in comprehensive performance calculation: {str(e)}")
+            import traceback
+            bt.logging.error(traceback.format_exc())
+            # Fallback to basic performance calculation
+            return await self.calculate_performance(predictions, uids)
 
-        if not prediction.addresses:
-            bt.logging.warning("Cannot calculate performance: Prediction has no addresses.")
-            return 0.0
 
-        bt.logging.debug(f"Evaluating {len(prediction.addresses)} tokens for {prediction.chain.value} prediction made at {prediction.timestamp}")
-
-        for i, token_addr in enumerate(prediction.addresses):
+    async def _enhance_with_historical_performance(self, evaluation_results) -> Dict[int, float]:
+        """
+        Enhance evaluation results with historical performance and Netheril-specific metrics.
+        Implements the whitepaper's emphasis on wallet profiling and consistency.
+        """
+        enhanced_scores = {}
+        
+        for result in evaluation_results:
+            uid = result.miner_uid
+            base_score = result.overall_score
+            
             try:
-                # Ensure we have a corresponding pair address
-                if i >= len(prediction.pairAddresses or []) or not prediction.pairAddresses[i] or prediction.pairAddresses[i] == "0x0000000000000000000000000000000000000000":
-                    # bt.logging.trace(f"Skipping token {token_addr}: Missing or invalid pair address.")
-                    continue
-
-                pair_addr = prediction.pairAddresses[i]
-
-                # Get initial liquidity (fetches/caches on first call)
-                initial_data = await self.get_or_cache_initial_liquidity(
-                    prediction.chain, token_addr, pair_addr
+                # Get historical performance for this miner
+                historical_data = self._get_historical_performance(uid)
+                
+                # Calculate Netheril-specific enhancements
+                wallet_profiling_score = await self._calculate_wallet_profiling_score(uid, result)
+                consistency_score = self._calculate_consistency_score(uid, historical_data)
+                liquidity_alpha_score = await self._calculate_liquidity_alpha_score(uid, result)
+                efficiency_score = self._calculate_efficiency_score(result)
+                
+                # Apply whitepaper-compliant weighted scoring
+                enhanced_score = (
+                    base_score * self.scoring_weights['accuracy'] +
+                    liquidity_alpha_score * self.scoring_weights['liquidity_alpha'] +
+                    wallet_profiling_score * self.scoring_weights['wallet_profiling'] +
+                    efficiency_score * self.scoring_weights['response_efficiency'] +
+                    consistency_score * self.scoring_weights['consistency']
                 )
-                initial_liquidity = initial_data["value"]
-                initial_timestamp = initial_data["timestamp"]
-
-                # CRITICAL CHECK: Skip tokens if initial liquidity was zero or couldn't be fetched.
-                if initial_liquidity <= 0:
-                    bt.logging.warning(f"Token {token_addr} (Pair: {pair_addr}) has zero or negative initial liquidity ({initial_liquidity}). Skipping performance calculation.")
-                    continue
-
-                # Check if enough time has passed since the initial liquidity check
-                current_time = time.time()
-                elapsed_time = current_time - initial_timestamp
-                if elapsed_time < self.min_evaluation_time:
-                    # bt.logging.trace(f"Skipping token {token_addr}: Not enough time elapsed ({elapsed_time:.0f}s < {self.min_evaluation_time}s).")
-                    continue
-
-                # Fetch current liquidity
-                try:
-                    current_metrics = await self.liquidity_checker.check_token_liquidity(
-                        prediction.chain, token_addr, pair_addr
-                    )
-                    current_liquidity = current_metrics.current_liquidity
-
-                    # Calculate percentage change (handle division by zero just in case, though checked above)
-                    if initial_liquidity > 0:
-                        percentage_change = ((current_liquidity - initial_liquidity) / initial_liquidity) * 100.0
-                    else:
-                        percentage_change = 0.0 # Should not happen due to check above
-
-                    total_percentage_change += percentage_change
-                    valid_tokens_evaluated += 1
-
-                    bt.logging.debug(f"Token {token_addr}: Initial Liq={initial_liquidity:.4f} (at {datetime.fromtimestamp(initial_timestamp)}), Current Liq={current_liquidity:.4f}, Change={percentage_change:.2f}%")
-
-                except Exception as e:
-                    bt.logging.warning(f"Error checking current liquidity for {token_addr} (Pair: {pair_addr}): {e}")
-                    # Continue to the next token if current check fails
-                    continue
-
+                
+                # Apply historical performance decay
+                if historical_data:
+                    historical_average = np.mean([h['score'] for h in historical_data[-10:]])  # Last 10 scores
+                    enhanced_score = (enhanced_score * 0.7) + (historical_average * 0.3)  # Blend with history
+                
+                enhanced_scores[uid] = max(0.0, min(1.0, enhanced_score))  # Clamp to [0, 1]
+                
+                bt.logging.debug(f"Enhanced scoring for miner {uid}: "
+                                f"base={base_score:.4f}, "
+                                f"wallet_profiling={wallet_profiling_score:.4f}, "
+                                f"consistency={consistency_score:.4f}, "
+                                f"liquidity_alpha={liquidity_alpha_score:.4f}, "
+                                f"final={enhanced_scores[uid]:.4f}")
+                
             except Exception as e:
-                # Catch errors during processing of a single token within the prediction
-                bt.logging.error(f"Error processing token {token_addr} in prediction: {e}")
-                bt.logging.debug(traceback.format_exc()) # Log traceback for debugging
-                continue # Continue to the next token
+                bt.logging.error(f"Error enhancing score for miner {uid}: {str(e)}")
+                enhanced_scores[uid] = base_score  # Fallback to base score
+        
+        return enhanced_scores
 
-        # Calculate average percentage change across all successfully evaluated tokens
-        if valid_tokens_evaluated > 0:
-            average_performance = total_percentage_change / valid_tokens_evaluated
-            bt.logging.info(f"Prediction evaluated {valid_tokens_evaluated} tokens. Average performance: {average_performance:.2f}%")
-            return average_performance
-        else:
-            bt.logging.warning("No valid tokens could be evaluated for this prediction.")
+    async def _calculate_wallet_profiling_score(self, uid: int, evaluation_result) -> float:
+        """
+        Calculate wallet profiling score based on Netheril approach (Section 3.5).
+        Measures how well the miner implements wallet-based token selection.
+        """
+        try:
+            # Check if miner's predictions show wallet-based analysis patterns
+            metadata = evaluation_result.metadata
+            
+            # Look for indicators of wallet profiling in prediction metadata
+            wallet_analysis_indicators = 0
+            max_indicators = 5
+            
+            # 1. Diversity in predictions (indicates wallet diversity analysis)
+            diversity_score = evaluation_result.scores.get('diversity', 0)
+            if diversity_score > 0.7:
+                wallet_analysis_indicators += 1
+            
+            # 2. Confidence calibration (indicates proper wallet ROI weighting)
+            confidence_calibration = evaluation_result.scores.get('confidence_calibration', 0)
+            if confidence_calibration > 0.6:
+                wallet_analysis_indicators += 1
+            
+            # 3. Response time efficiency (indicates optimized wallet lookups)
+            response_time_score = evaluation_result.scores.get('response_time', 0)
+            if response_time_score > 0.8:
+                wallet_analysis_indicators += 1
+            
+            # 4. Liquidity correlation (indicates understanding of wallet impact on liquidity)
+            liquidity_correlation = evaluation_result.scores.get('liquidity_correlation', 0)
+            if liquidity_correlation > 0.5:
+                wallet_analysis_indicators += 1
+            
+            # 5. Check if predictions have appropriate confidence distribution
+            if 'num_predictions' in metadata and metadata['num_predictions'] >= 5:
+                wallet_analysis_indicators += 1
+            
+            wallet_profiling_score = wallet_analysis_indicators / max_indicators
+            
+            bt.logging.debug(f"Wallet profiling score for miner {uid}: "
+                           f"{wallet_profiling_score:.4f} "
+                           f"({wallet_analysis_indicators}/{max_indicators} indicators)")
+            
+            return wallet_profiling_score
+            
+        except Exception as e:
+            bt.logging.error(f"Error calculating wallet profiling score for miner {uid}: {str(e)}")
             return 0.0
 
-    async def calculate_performance(
-        self,
-        predictions: List[TokenPrediction], # Predictions from the CURRENT round
-        miner_ids: List[int] # UIDs corresponding *exactly* to the predictions list
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    def _calculate_consistency_score(self, uid: int, historical_data: List[Dict]) -> float:
         """
-        Calculate performance scores for a list of predictions from the current round.
-
-        Args:
-            predictions: List of TokenPrediction objects to evaluate.
-            miner_ids: List of miner UIDs, where miner_ids[i] corresponds to predictions[i].
-
-        Returns:
-            A tuple containing two numpy arrays:
-            1. An array of miner UIDs for which performance was successfully calculated.
-            2. An array of corresponding raw performance scores (average percentage change).
-            Returns empty arrays if no performance could be calculated.
+        Calculate consistency score based on historical performance stability.
+        Rewards miners who consistently perform well over time.
         """
-        if not predictions:
-            bt.logging.warning("No predictions provided for performance calculation.")
-            return np.array([], dtype=int), np.array([], dtype=float)
+        try:
+            if not historical_data or len(historical_data) < 3:
+                return 0.5  # Neutral score for new miners
+            
+            # Get recent scores (last 20 evaluations)
+            recent_scores = [h['score'] for h in historical_data[-20:]]
+            
+            if len(recent_scores) < 3:
+                return 0.5
+            
+            # Calculate consistency metrics
+            mean_score = np.mean(recent_scores)
+            std_score = np.std(recent_scores)
+            
+            # Consistency score: high mean, low variance is best
+            if std_score == 0:
+                consistency_score = 1.0 if mean_score > 0.5 else 0.5
+            else:
+                # Normalize by coefficient of variation
+                cv = std_score / (mean_score + 1e-8)  # Add small epsilon to avoid division by zero
+                consistency_score = max(0.0, 1.0 - cv)  # Lower CV = higher consistency
+            
+            # Apply trend analysis - reward improving performance
+            if len(recent_scores) >= 10:
+                first_half = np.mean(recent_scores[:len(recent_scores)//2])
+                second_half = np.mean(recent_scores[len(recent_scores)//2:])
+                improvement_factor = min(1.2, max(0.8, second_half / (first_half + 1e-8)))
+                consistency_score *= improvement_factor
+            
+            consistency_score = max(0.0, min(1.0, consistency_score))
+            
+            bt.logging.debug(f"Consistency score for miner {uid}: {consistency_score:.4f} "
+                           f"(mean={mean_score:.4f}, std={std_score:.4f})")
+            
+            return consistency_score
+            
+        except Exception as e:
+            bt.logging.error(f"Error calculating consistency score for miner {uid}: {str(e)}")
+            return 0.5
 
-        # CRITICAL CHECK: Ensure the number of predictions matches the number of miner IDs
-        if len(predictions) != len(miner_ids):
-            bt.logging.error(f"CRITICAL MISMATCH: Cannot calculate performance. Received {len(predictions)} predictions but {len(miner_ids)} miner IDs.")
-            # Returning empty arrays prevents incorrect reward assignment
-            return np.array([], dtype=int), np.array([], dtype=float)
+    async def _calculate_liquidity_alpha_score(self, uid: int, evaluation_result) -> float:
+        """
+        Calculate liquidity alpha score - measures ability to predict liquidity-impacting tokens.
+        This implements the core Netheril approach of energy dissipation tracking.
+        """
+        try:
+            # Base liquidity correlation from evaluation
+            base_liquidity_score = evaluation_result.scores.get('liquidity_correlation', 0)
+            
+            # Check for additional liquidity intelligence indicators
+            metadata = evaluation_result.metadata
+            
+            # Factor in prediction timing efficiency (faster predictions for high-liquidity tokens)
+            timing_factor = 1.0
+            inference_time = metadata.get('inference_time_ms', 1000)
+            if inference_time < 500:  # Very fast predictions
+                timing_factor = 1.1
+            elif inference_time > 2000:  # Slow predictions
+                timing_factor = 0.9
+            
+            # Factor in prediction precision (appropriate number of predictions)
+            precision_factor = 1.0
+            num_predictions = metadata.get('num_predictions', 0)
+            if 5 <= num_predictions <= 15:  # Optimal range
+                precision_factor = 1.1
+            elif num_predictions > 20:  # Too many predictions
+                precision_factor = 0.9
+            
+            # Combine factors
+            liquidity_alpha_score = base_liquidity_score * timing_factor * precision_factor
+            liquidity_alpha_score = max(0.0, min(1.0, liquidity_alpha_score))
+            
+            bt.logging.debug(f"Liquidity alpha score for miner {uid}: {liquidity_alpha_score:.4f} "
+                           f"(base={base_liquidity_score:.4f}, timing={timing_factor:.2f}, "
+                           f"precision={precision_factor:.2f})")
+            
+            return liquidity_alpha_score
+            
+        except Exception as e:
+            bt.logging.error(f"Error calculating liquidity alpha score for miner {uid}: {str(e)}")
+            return 0.0
 
-        performances = []
-        valid_miner_ids_for_scores = [] # Store UIDs for which a score was calculated
+    def _calculate_efficiency_score(self, evaluation_result) -> float:
+        """
+        Calculate efficiency score based on computational resources and response time.
+        """
+        try:
+            # Get response time score from evaluation
+            response_time_score = evaluation_result.scores.get('response_time', 0)
+            
+            # Get resource usage from metadata
+            metadata = evaluation_result.metadata
+            memory_usage = metadata.get('memory_usage_mb', 0)
+            inference_time = metadata.get('inference_time_ms', 1000)
+            
+            # Score memory efficiency (lower is better, up to reasonable limits)
+            memory_efficiency = 1.0
+            if memory_usage > 0:
+                if memory_usage <= 100:  # Very efficient
+                    memory_efficiency = 1.0
+                elif memory_usage <= 500:  # Reasonable
+                    memory_efficiency = 0.8
+                elif memory_usage <= 1000:  # Acceptable
+                    memory_efficiency = 0.6
+                else:  # Inefficient
+                    memory_efficiency = 0.4
+            
+            # Combine response time and memory efficiency
+            efficiency_score = (response_time_score * 0.7) + (memory_efficiency * 0.3)
+            
+            bt.logging.debug(f"Efficiency score: {efficiency_score:.4f} "
+                           f"(response_time={response_time_score:.4f}, "
+                           f"memory_eff={memory_efficiency:.4f})")
+            
+            return efficiency_score
+            
+        except Exception as e:
+            bt.logging.error(f"Error calculating efficiency score: {str(e)}")
+            return 0.5
 
-        bt.logging.info(f"Calculating performance for {len(predictions)} predictions from UIDs: {miner_ids}")
+    def _get_historical_performance(self, uid: int) -> List[Dict]:
+        """Get historical performance data for a miner"""
+        if uid not in self.historical_scores:
+            return []
+        
+        # Filter to recent history (last 7 days)
+        cutoff_time = datetime.utcnow() - timedelta(hours=self.historical_window_hours)
+        recent_history = [
+            h for h in self.historical_scores[uid]
+            if h['timestamp'] > cutoff_time
+        ]
+        
+        return recent_history
 
-        # Iterate through predictions and their corresponding miner IDs
-        for i, pred in enumerate(predictions):
-            miner_id = miner_ids[i] # Direct 1-to-1 mapping thanks to the check above
-            try:
-                # Calculate the performance for this specific prediction
-                avg_performance = await self.calculate_token_performance(pred)
+    def _update_performance_tracking(self, evaluation_results, enhanced_scores: Dict[int, float]):
+        """Update historical performance tracking with new results"""
+        current_time = datetime.utcnow()
+        
+        for result in evaluation_results:
+            uid = result.miner_uid
+            enhanced_score = enhanced_scores.get(uid, result.overall_score)
+            
+            # Add to historical tracking
+            if uid not in self.historical_scores:
+                self.historical_scores[uid] = []
+            
+            score_entry = {
+                'timestamp': current_time,
+                'score': enhanced_score,
+                'base_score': result.overall_score,
+                'round_id': result.metadata.get('round_id', ''),
+                'evaluation_time': result.metadata.get('evaluation_time', ''),
+                'scores_breakdown': result.scores.copy()
+            }
+            
+            self.historical_scores[uid].append(score_entry)
+            
+            # Keep only recent history (last 100 entries per miner)
+            self.historical_scores[uid] = self.historical_scores[uid][-100:]
+            
+            bt.logging.debug(f"Updated performance tracking for miner {uid}: "
+                           f"score={enhanced_score:.4f}")
 
-                # Store the calculated performance and the corresponding miner ID
-                performances.append(avg_performance)
-                valid_miner_ids_for_scores.append(miner_id)
+    async def calculate_performance(self, predictions: List[TokenPrediction], uids: List[int]) -> Tuple[List[int], List[float]]:
+        """
+        Fallback performance calculation method for when model evaluation is unavailable.
+        Implements basic Netheril-inspired scoring.
+        """
+        try:
+            bt.logging.info("Using fallback performance calculation method")
+            
+            if len(predictions) != len(uids):
+                bt.logging.error(f"Mismatch: {len(predictions)} predictions vs {len(uids)} UIDs")
+                return [], []
+            
+            scores = []
+            
+            for i, prediction in enumerate(predictions):
+                uid = uids[i]
+                
+                try:
+                    # Basic scoring factors
+                    prediction_quality = self._score_prediction_quality(prediction)
+                    diversity_score = self._score_diversity(prediction)
+                    confidence_quality = self._score_confidence_quality(prediction)
+                    timing_score = self._score_timing(prediction)
+                    
+                    # Combine scores with weights
+                    overall_score = (
+                        prediction_quality * 0.4 +
+                        diversity_score * 0.25 +
+                        confidence_quality * 0.2 +
+                        timing_score * 0.15
+                    )
+                    
+                    # Apply historical consistency if available
+                    historical_data = self._get_historical_performance(uid)
+                    if historical_data:
+                        consistency_score = self._calculate_consistency_score(uid, historical_data)
+                        overall_score = (overall_score * 0.8) + (consistency_score * 0.2)
+                    
+                    scores.append(max(0.0, min(1.0, overall_score)))
+                    
+                    bt.logging.debug(f"Fallback scoring for miner {uid}: "
+                                   f"quality={prediction_quality:.3f}, "
+                                   f"diversity={diversity_score:.3f}, "
+                                   f"confidence={confidence_quality:.3f}, "
+                                   f"timing={timing_score:.3f}, "
+                                   f"overall={scores[-1]:.3f}")
+                    
+                except Exception as e:
+                    bt.logging.error(f"Error scoring prediction for UID {uid}: {str(e)}")
+                    scores.append(0.0)
+            
+            bt.logging.info(f"Fallback performance calculation completed for {len(uids)} miners")
+            return uids, scores
+            
+        except Exception as e:
+            bt.logging.error(f"Error in fallback performance calculation: {str(e)}")
+            return [], []
 
-                bt.logging.info(f"Performance calculated for UID {miner_id}: {avg_performance:.2f}%")
+    def _score_prediction_quality(self, prediction: TokenPrediction) -> float:
+        """Score based on prediction quality indicators"""
+        if not prediction.addresses:
+            return 0.0
+        
+        # Quality factors
+        num_predictions = len(prediction.addresses)
+        has_pairs = bool(prediction.pairAddresses)
+        has_confidence = bool(prediction.confidence_scores)
+        
+        # Optimal prediction count (5-15 as per whitepaper guidance)
+        count_score = 1.0 if 5 <= num_predictions <= 15 else max(0.3, 1.0 - abs(num_predictions - 10) * 0.05)
+        pair_score = 1.0 if has_pairs else 0.7
+        confidence_score = 1.0 if has_confidence else 0.5
+        
+        return (count_score + pair_score + confidence_score) / 3.0
 
-            except Exception as e:
-                # Catch errors during the performance calculation for a specific miner's prediction
-                bt.logging.error(f"Error calculating performance for UID {miner_id}'s prediction: {e}")
-                bt.logging.debug(traceback.format_exc()) # Log traceback for debugging
-                # Skip this miner's score if calculation failed
-                continue
+    def _score_diversity(self, prediction: TokenPrediction) -> float:
+        """Score prediction diversity (important for Netheril wallet profiling)"""
+        if not prediction.addresses:
+            return 0.0
+        
+        # Check for address diversity (no duplicates, reasonable spread)
+        unique_addresses = len(set(prediction.addresses))
+        diversity_ratio = unique_addresses / len(prediction.addresses)
+        
+        return diversity_ratio
 
-        # Convert the results to numpy arrays
-        performances_array = np.array(performances, dtype=float)
-        final_miner_ids_array = np.array(valid_miner_ids_for_scores, dtype=int)
-
-        # Log summary of the round's performance calculation
-        if len(final_miner_ids_array) > 0:
-             avg_overall_performance = np.mean(performances_array)
-             bt.logging.info(f"Finished performance calculation for {len(final_miner_ids_array)} predictions. Average raw score: {avg_overall_performance:.2f}%")
+    def _score_confidence_quality(self, prediction: TokenPrediction) -> float:
+        """Score confidence score quality and calibration"""
+        if not prediction.confidence_scores:
+            return 0.5
+        
+        confidence_values = list(prediction.confidence_scores.values())
+        
+        # Check for reasonable confidence distribution
+        mean_confidence = np.mean(confidence_values)
+        std_confidence = np.std(confidence_values)
+        
+        # Prefer diverse but reasonable confidence scores
+        if 0.3 <= mean_confidence <= 0.8 and std_confidence > 0.1:
+            return 1.0
+        elif 0.1 <= mean_confidence <= 0.9:
+            return 0.7
         else:
-             bt.logging.warning("Performance calculation finished, but no valid scores were generated.")
+            return 0.3
 
-        # Return the arrays of UIDs and their corresponding scores
-        return final_miner_ids_array, performances_array
+    def _score_timing(self, prediction: TokenPrediction) -> float:
+        """Score based on inference timing efficiency"""
+        inference_time = getattr(prediction, 'inference_time_ms', 1000)
+        
+        if inference_time <= 0:
+            return 1.0  # No timing data
+        
+        # Score based on speed (faster is better, up to reasonable limits)
+        if inference_time <= 500:
+            return 1.0
+        elif inference_time <= 1000:
+            return 0.8
+        elif inference_time <= 2000:
+            return 0.6
+        elif inference_time <= 5000:
+            return 0.4
+        else:
+            return 0.2
 
-    def normalize_performance(self, performance_scores: np.ndarray) -> np.ndarray:
+    def normalize_performance(self, scores: List[float]) -> List[float]:
         """
-        Normalize raw performance scores (percentage changes) to a 0.1 - 1.0 range.
-        This scaling ensures rewards are positive and distributed relative to performance.
-
-        Args:
-            performance_scores: A numpy array of raw performance scores.
-
-        Returns:
-            A numpy array of normalized scores, ranging from 0.1 to 1.0.
-            Returns an empty array if the input is empty.
+        Normalize performance scores to ensure fair distribution.
+        Uses softmax-like normalization to maintain relative rankings.
         """
-        if len(performance_scores) == 0:
-            return np.array([], dtype=float) # Return float array
+        try:
+            if not scores:
+                return []
+            
+            scores_array = np.array(scores, dtype=float)
+            
+            # Handle edge cases
+            if len(scores) == 1:
+                return [1.0]
+            
+            if np.all(scores_array == 0):
+                return [1.0 / len(scores)] * len(scores)  # Equal distribution
+            
+            # Apply temperature scaling for better distribution
+            temperature = 0.5
+            scaled_scores = scores_array / temperature
+            
+            # Prevent overflow in softmax
+            scaled_scores = scaled_scores - np.max(scaled_scores)
+            
+            # Softmax normalization
+            exp_scores = np.exp(scaled_scores)
+            normalized_scores = exp_scores / np.sum(exp_scores)
+            
+            # Ensure minimum score threshold
+            min_score = 0.01
+            normalized_scores = np.maximum(normalized_scores, min_score)
+            
+            # Renormalize after applying minimum
+            normalized_scores = normalized_scores / np.sum(normalized_scores)
+            
+            bt.logging.debug(f"Normalized {len(scores)} scores: "
+                           f"original_range=[{min(scores):.4f}, {max(scores):.4f}], "
+                           f"normalized_range=[{min(normalized_scores):.4f}, {max(normalized_scores):.4f}]")
+            
+            return normalized_scores.tolist()
+            
+        except Exception as e:
+            bt.logging.error(f"Error normalizing performance scores: {str(e)}")
+            # Fallback to equal distribution
+            return [1.0 / len(scores)] * len(scores)
 
-        # Handle case where all scores are the same to avoid division by zero
-        if np.all(performance_scores == performance_scores[0]):
-             # If all scores are identical, assign a mid-range normalized score (e.g., 0.55)
-             # or handle as per specific requirements (e.g., all get 0.1 or 1.0).
-             # Assigning 0.55 provides some differentiation if needed later.
-             bt.logging.info("All performance scores are identical. Assigning uniform normalized score.")
-             return np.full(performance_scores.shape, 0.55, dtype=float)
-
-
-        # Find the minimum and maximum scores in the array
-        min_score = np.min(performance_scores)
-        max_score = np.max(performance_scores)
-
-        # Normalize scores to the 0-1 range using min-max scaling
-        # Add a small epsilon to the denominator to prevent division by zero if max_score == min_score (handled above, but safe)
-        range_score = max_score - min_score
-        if range_score == 0: range_score = 1e-9 # Prevent division by zero
-
-        normalized_scores = (performance_scores - min_score) / range_score
-
-        # Scale the normalized scores to the desired 0.1 - 1.0 range
-        # Formula: scaled = new_min + normalized * (new_max - new_min)
-        scaled_scores = 0.1 + (normalized_scores * 0.9)
-
-        # Ensure scores are clipped within the bounds just in case of floating point issues
-        scaled_scores = np.clip(scaled_scores, 0.1, 1.0)
-
-        bt.logging.debug(f"Normalized scores: Min={np.min(scaled_scores):.4f}, Max={np.max(scaled_scores):.4f}, Avg={np.mean(scaled_scores):.4f}")
-
-        return scaled_scores
+    def get_performance_statistics(self) -> Dict[str, Any]:
+        """Get overall performance statistics across all miners"""
+        try:
+            total_evaluations = sum(len(history) for history in self.historical_scores.values())
+            active_miners = len(self.historical_scores)
+            
+            # Calculate recent performance metrics
+            recent_scores = []
+            cutoff_time = datetime.utcnow() - timedelta(hours=24)
+            
+            for history in self.historical_scores.values():
+                recent_evals = [
+                    eval_data for eval_data in history
+                    if eval_data['timestamp'] > cutoff_time
+                ]
+                recent_scores.extend([eval_data['score'] for eval_data in recent_evals])
+            
+            avg_score = np.mean(recent_scores) if recent_scores else 0.0
+            max_score = np.max(recent_scores) if recent_scores else 0.0
+            
+            return {
+                'total_evaluations': total_evaluations,
+                'active_miners': active_miners,
+                'recent_evaluations_24h': len(recent_scores),
+                'average_score_24h': float(avg_score),
+                'max_score_24h': float(max_score),
+                'scoring_weights': self.scoring_weights.copy(),
+                'last_updated': datetime.utcnow().isoformat()
+            }
+            
+        except Exception as e:
+            bt.logging.error(f"Error getting performance statistics: {str(e)}")
+            return {}
